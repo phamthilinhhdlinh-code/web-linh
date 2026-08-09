@@ -1645,6 +1645,7 @@ async function handleExcelUpload(event) {
       const firstSheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[firstSheetName];
       const json = XLSX.utils.sheet_to_json(worksheet);
+      console.log("Excel Raw JSON data:", json);
 
       if (json.length === 0) {
         showToast("File Excel rỗng hoặc không đúng định dạng!", "error");
@@ -1654,6 +1655,7 @@ async function handleExcelUpload(event) {
       // Detect and map headers
       const rawRow = json[0];
       const headerKeys = Object.keys(rawRow);
+      console.log("Excel parsed Header Keys:", headerKeys);
       
       let nameKey = '';
       let classKey = '';
