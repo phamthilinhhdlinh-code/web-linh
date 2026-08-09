@@ -8,11 +8,82 @@ app = Flask(__name__, static_folder='static')
 CORS(app)
 
 DB_FILE = os.path.join(os.path.dirname(__file__), 'database.db')
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+class PostgresCursorProxy:
+    def __init__(self, cursor, conn=None):
+        self._cursor = cursor
+        self._conn = conn
+
+    def execute(self, query, params=None):
+        if params is None:
+            params = ()
+        # Convert ? placeholders to postgres %s placeholders
+        query = query.replace('?', '%s')
+        self._cursor.execute(query, params)
+        return self
+
+    def fetchone(self):
+        return self._cursor.fetchone()
+
+    def fetchall(self):
+        return self._cursor.fetchall()
+
+    @property
+    def lastrowid(self):
+        try:
+            conn = self._conn if self._conn else self._cursor.connection
+            with conn.cursor() as tmp_cur:
+                tmp_cur.execute("SELECT LASTVAL();")
+                val = tmp_cur.fetchone()
+                if isinstance(val, dict):
+                    return list(val.values())[0]
+                elif isinstance(val, (list, tuple)):
+                    return val[0]
+                return val
+        except Exception:
+            return None
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
+
+class PostgresConnectionProxy:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def cursor(self, *args, **kwargs):
+        cur = self._conn.cursor(*args, **kwargs)
+        return PostgresCursorProxy(cur, self._conn)
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        self._conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type:
+            self.rollback()
+        else:
+            self.commit()
+        self.close()
 
 def get_db():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    return conn
+    if DATABASE_URL:
+        import psycopg
+        from psycopg.rows import dict_row
+        conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+        return PostgresConnectionProxy(conn)
+    else:
+        conn = sqlite3.connect(DB_FILE)
+        conn.row_factory = sqlite3.Row
+        return conn
 
 def db_row_value(row, col_name, col_index=0):
     if row is None:
@@ -28,139 +99,271 @@ def db_row_value(row, col_name, col_index=0):
     return None
 
 def init_db():
+    db_url = os.environ.get("DATABASE_URL")
+    is_postgres = db_url is not None
+
     conn = get_db()
     cursor = conn.cursor()
 
-    # 0. Migration checks / drops
-    cursor.execute("PRAGMA table_info(bonus_penalty_logs);")
-    cols = [row['name'] for row in cursor.fetchall()]
-    if cols and 'week_number' not in cols:
-        cursor.execute("DROP TABLE IF EXISTS final_grades;")
-        cursor.execute("DROP TABLE IF EXISTS bonus_penalty_logs;")
-        cursor.execute("DROP TABLE IF EXISTS regular_scores;")
-        cursor.execute("DROP TABLE IF EXISTS score_types;")
+    if is_postgres:
+        try:
+            cursor.execute("""
+                SELECT column_name FROM information_schema.columns 
+                WHERE table_name = 'bonus_penalty_logs' AND column_name = 'week_number';
+            """)
+            has_week = cursor.fetchone()
+            if not has_week:
+                cursor.execute("DROP TABLE IF EXISTS final_grades CASCADE;")
+                cursor.execute("DROP TABLE IF EXISTS teacher_comments CASCADE;")
+                cursor.execute("DROP TABLE IF EXISTS bonus_penalty_logs CASCADE;")
+                cursor.execute("DROP TABLE IF EXISTS regular_scores CASCADE;")
+                cursor.execute("DROP TABLE IF EXISTS score_types CASCADE;")
+            else:
+                cursor.execute("""
+                    SELECT column_name FROM information_schema.columns 
+                    WHERE table_name = 'final_grades' AND column_name = 'kttx_period';
+                """)
+                has_kttx_period = cursor.fetchone()
+                if not has_kttx_period:
+                    cursor.execute("DROP TABLE IF EXISTS final_grades CASCADE;")
+        except Exception:
+            pass
+
+        # 1. Classes Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS classes (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            grade_level INTEGER NOT NULL,
+            academic_year VARCHAR(50) NOT NULL
+        );
+        """)
+
+        # 2. Groups Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS groups (
+            id SERIAL PRIMARY KEY,
+            class_id INTEGER NOT NULL,
+            group_number INTEGER NOT NULL,
+            name VARCHAR(255) NOT NULL,
+            FOREIGN KEY (class_id) REFERENCES classes (id) ON DELETE CASCADE
+        );
+        """)
+
+        # 3. Students Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS students (
+            id SERIAL PRIMARY KEY,
+            student_code VARCHAR(100) UNIQUE NOT NULL,
+            full_name VARCHAR(255) NOT NULL,
+            class_id INTEGER NOT NULL,
+            group_id INTEGER NOT NULL,
+            is_group_leader INTEGER DEFAULT 0,
+            avatar_gender VARCHAR(50) DEFAULT 'male',
+            FOREIGN KEY (class_id) REFERENCES classes (id) ON DELETE CASCADE,
+            FOREIGN KEY (group_id) REFERENCES groups (id) ON DELETE CASCADE
+        );
+        """)
+
+        # 4. Score Types Table (KTTX)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS score_types (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            category VARCHAR(255) NOT NULL,
+            weight REAL DEFAULT 1.0
+        );
+        """)
+
+        # 5. Regular Scores Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS regular_scores (
+            id SERIAL PRIMARY KEY,
+            student_id INTEGER NOT NULL,
+            score_type_id INTEGER NOT NULL,
+            score REAL NOT NULL,
+            date_logged VARCHAR(50) NOT NULL,
+            note TEXT,
+            FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+            FOREIGN KEY (score_type_id) REFERENCES score_types (id) ON DELETE CASCADE
+        );
+        """)
+
+        # 6. Bonus Penalty Logs Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bonus_penalty_logs (
+            id SERIAL PRIMARY KEY,
+            student_id INTEGER NOT NULL,
+            group_id INTEGER NOT NULL,
+            type VARCHAR(20) NOT NULL,
+            points REAL NOT NULL,
+            reason TEXT NOT NULL,
+            category_type VARCHAR(255) NOT NULL,
+            declared_by_student_id INTEGER NOT NULL,
+            status VARCHAR(50) DEFAULT 'PENDING',
+            week_number INTEGER NOT NULL DEFAULT 1,
+            created_at VARCHAR(50) NOT NULL,
+            reviewed_at VARCHAR(50),
+            teacher_note TEXT,
+            FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+            FOREIGN KEY (group_id) REFERENCES groups (id) ON DELETE CASCADE,
+            FOREIGN KEY (declared_by_student_id) REFERENCES students (id) ON DELETE CASCADE
+        );
+        """)
+
+        # 7. Final Grades Table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS final_grades (
+            id SERIAL PRIMARY KEY,
+            student_id INTEGER NOT NULL,
+            kttx_period INTEGER NOT NULL DEFAULT 1,
+            avg_kttx REAL DEFAULT 0.0,
+            total_bonus_penalty REAL DEFAULT 0.0,
+            final_score REAL DEFAULT 0.0,
+            academic_rank VARCHAR(255) DEFAULT 'Chưa xếp loại',
+            updated_at VARCHAR(50) NOT NULL,
+            FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+            UNIQUE(student_id, kttx_period)
+        );
+        """)
+
+        # 8. Teacher Comments
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS teacher_comments (
+            id SERIAL PRIMARY KEY,
+            student_id INTEGER NOT NULL,
+            week_num INTEGER NOT NULL,
+            comment TEXT NOT NULL,
+            badge VARCHAR(255),
+            created_at VARCHAR(50) NOT NULL,
+            FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE
+        );
+        """)
     else:
-        cursor.execute("PRAGMA table_info(final_grades);")
-        f_cols = [row['name'] for row in cursor.fetchall()]
-        if f_cols and 'kttx_period' not in f_cols:
+        # SQLite
+        cursor.execute("PRAGMA table_info(bonus_penalty_logs);")
+        cols = [row['name'] for row in cursor.fetchall()]
+        if cols and 'week_number' not in cols:
             cursor.execute("DROP TABLE IF EXISTS final_grades;")
+            cursor.execute("DROP TABLE IF EXISTS teacher_comments;")
+            cursor.execute("DROP TABLE IF EXISTS bonus_penalty_logs;")
+            cursor.execute("DROP TABLE IF EXISTS regular_scores;")
+            cursor.execute("DROP TABLE IF EXISTS score_types;")
+        else:
+            cursor.execute("PRAGMA table_info(final_grades);")
+            f_cols = [row['name'] for row in cursor.fetchall()]
+            if f_cols and 'kttx_period' not in f_cols:
+                cursor.execute("DROP TABLE IF EXISTS final_grades;")
 
-    # 1. Classes Table
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS classes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        grade_level INTEGER NOT NULL,
-        academic_year TEXT NOT NULL
-    );
-    """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS classes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            grade_level INTEGER NOT NULL,
+            academic_year TEXT NOT NULL
+        );
+        """)
 
-    # 2. Groups Table
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS groups (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        class_id INTEGER NOT NULL,
-        group_number INTEGER NOT NULL,
-        name TEXT NOT NULL,
-        FOREIGN KEY (class_id) REFERENCES classes (id) ON DELETE CASCADE
-    );
-    """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            class_id INTEGER NOT NULL,
+            group_number INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            FOREIGN KEY (class_id) REFERENCES classes (id) ON DELETE CASCADE
+        );
+        """)
 
-    # 3. Students Table
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS students (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        student_code TEXT UNIQUE NOT NULL,
-        full_name TEXT NOT NULL,
-        class_id INTEGER NOT NULL,
-        group_id INTEGER NOT NULL,
-        is_group_leader INTEGER DEFAULT 0,
-        avatar_gender TEXT DEFAULT 'male',
-        FOREIGN KEY (class_id) REFERENCES classes (id) ON DELETE CASCADE,
-        FOREIGN KEY (group_id) REFERENCES groups (id) ON DELETE CASCADE
-    );
-    """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS students (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_code TEXT UNIQUE NOT NULL,
+            full_name TEXT NOT NULL,
+            class_id INTEGER NOT NULL,
+            group_id INTEGER NOT NULL,
+            is_group_leader INTEGER DEFAULT 0,
+            avatar_gender TEXT DEFAULT 'male',
+            FOREIGN KEY (class_id) REFERENCES classes (id) ON DELETE CASCADE,
+            FOREIGN KEY (group_id) REFERENCES groups (id) ON DELETE CASCADE
+        );
+        """)
 
-    # 4. Score Types Table (KTTX)
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS score_types (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        category TEXT NOT NULL,
-        weight REAL DEFAULT 1.0
-    );
-    """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS score_types (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            weight REAL DEFAULT 1.0
+        );
+        """)
 
-    # 5. Regular Scores Table
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS regular_scores (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        student_id INTEGER NOT NULL,
-        score_type_id INTEGER NOT NULL,
-        score REAL NOT NULL,
-        date_logged TEXT NOT NULL,
-        note TEXT,
-        FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
-        FOREIGN KEY (score_type_id) REFERENCES score_types (id) ON DELETE CASCADE
-    );
-    """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS regular_scores (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id INTEGER NOT NULL,
+            score_type_id INTEGER NOT NULL,
+            score REAL NOT NULL,
+            date_logged TEXT NOT NULL,
+            note TEXT,
+            FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+            FOREIGN KEY (score_type_id) REFERENCES score_types (id) ON DELETE CASCADE
+        );
+        """)
 
-    # 6. Bonus Penalty Logs Table
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS bonus_penalty_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        student_id INTEGER NOT NULL,
-        group_id INTEGER NOT NULL,
-        type TEXT CHECK(type IN ('BONUS', 'PENALTY')) NOT NULL,
-        points REAL NOT NULL,
-        reason TEXT NOT NULL,
-        category_type TEXT NOT NULL,
-        declared_by_student_id INTEGER NOT NULL,
-        status TEXT CHECK(status IN ('PENDING', 'APPROVED', 'REJECTED')) DEFAULT 'PENDING',
-        week_number INTEGER NOT NULL DEFAULT 1,
-        created_at TEXT NOT NULL,
-        reviewed_at TEXT,
-        teacher_note TEXT,
-        FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
-        FOREIGN KEY (group_id) REFERENCES groups (id) ON DELETE CASCADE,
-        FOREIGN KEY (declared_by_student_id) REFERENCES students (id) ON DELETE CASCADE
-    );
-    """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bonus_penalty_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id INTEGER NOT NULL,
+            group_id INTEGER NOT NULL,
+            type TEXT CHECK(type IN ('BONUS', 'PENALTY')) NOT NULL,
+            points REAL NOT NULL,
+            reason TEXT NOT NULL,
+            category_type TEXT NOT NULL,
+            declared_by_student_id INTEGER NOT NULL,
+            status TEXT CHECK(status IN ('PENDING', 'APPROVED', 'REJECTED')) DEFAULT 'PENDING',
+            week_number INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            reviewed_at TEXT,
+            teacher_note TEXT,
+            FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+            FOREIGN KEY (group_id) REFERENCES groups (id) ON DELETE CASCADE,
+            FOREIGN KEY (declared_by_student_id) REFERENCES students (id) ON DELETE CASCADE
+        );
+        """)
 
-    # 7. Final Grades Table
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS final_grades (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        student_id INTEGER NOT NULL,
-        kttx_period INTEGER NOT NULL DEFAULT 1,
-        avg_kttx REAL DEFAULT 0.0,
-        total_bonus_penalty REAL DEFAULT 0.0,
-        final_score REAL DEFAULT 0.0,
-        academic_rank TEXT DEFAULT 'Chưa xếp loại',
-        updated_at TEXT NOT NULL,
-        FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
-        UNIQUE(student_id, kttx_period)
-    );
-    """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS final_grades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id INTEGER NOT NULL,
+            kttx_period INTEGER NOT NULL DEFAULT 1,
+            avg_kttx REAL DEFAULT 0.0,
+            total_bonus_penalty REAL DEFAULT 0.0,
+            final_score REAL DEFAULT 0.0,
+            academic_rank TEXT DEFAULT 'Chưa xếp loại',
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+            UNIQUE(student_id, kttx_period)
+        );
+        """)
 
-    # 8. Teacher Comments
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS teacher_comments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        student_id INTEGER NOT NULL,
-        week_num INTEGER NOT NULL,
-        comment TEXT NOT NULL,
-        badge TEXT,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE
-    );
-    """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS teacher_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id INTEGER NOT NULL,
+            week_num INTEGER NOT NULL,
+            comment TEXT NOT NULL,
+            badge TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE
+        );
+        """)
 
     conn.commit()
 
     # Check if seed data exists
     cursor.execute("SELECT COUNT(*) FROM classes;")
-    if cursor.fetchone()[0] == 0:
+    count_val = db_row_value(cursor.fetchone(), 'count', 0)
+    if count_val == 0:
         seed_data(conn)
 
     conn.close()
@@ -351,7 +554,7 @@ def recalculate_all_final_grades(conn=None):
             # 1. Calc Avg KTTX
             cursor.execute("SELECT score FROM regular_scores WHERE student_id = ? AND score_type_id = ? LIMIT 1;", (s_id, score_type_id))
             row = cursor.fetchone()
-            avg_kttx = row[0] if row else 0.0
+            avg_kttx = db_row_value(row, 'score', 0) if row else 0.0
             avg_kttx = round(avg_kttx, 2)
 
             # 2. Calc Total Approved Bonus/Penalty Points in the week range for this period
@@ -360,7 +563,7 @@ def recalculate_all_final_grades(conn=None):
                 SELECT SUM(points) FROM bonus_penalty_logs
                 WHERE student_id = ? AND status = 'APPROVED' AND week_number BETWEEN ? AND ?;
             """, (s_id, w_start, w_end))
-            total_bp = cursor.fetchone()[0] or 0.0
+            total_bp = db_row_value(cursor.fetchone(), 'sum', 0) or 0.0
             total_bp = round(total_bp, 2)
 
             # 3. Calculate Final Grade = min(10.0, max(0.0, avg_kttx + total_bp))
@@ -524,16 +727,16 @@ def get_overview():
     cursor = conn.cursor()
 
     cursor.execute("SELECT COUNT(*) FROM students;")
-    total_students = cursor.fetchone()[0]
+    total_students = db_row_value(cursor.fetchone(), 'count', 0) or 0
 
     cursor.execute("SELECT COUNT(*) FROM groups;")
-    total_groups = cursor.fetchone()[0]
+    total_groups = db_row_value(cursor.fetchone(), 'count', 0) or 0
 
     cursor.execute("SELECT COUNT(*) FROM bonus_penalty_logs WHERE status = 'PENDING';")
-    pending_declarations = cursor.fetchone()[0]
+    pending_declarations = db_row_value(cursor.fetchone(), 'count', 0) or 0
 
     cursor.execute("SELECT AVG(final_score) FROM final_grades WHERE kttx_period = ?;", (period,))
-    avg_class_score = round(cursor.fetchone()[0] or 0.0, 2)
+    avg_class_score = round(db_row_value(cursor.fetchone(), 'avg', 0) or 0.0, 2)
 
     # Class rank distribution
     cursor.execute("""
@@ -979,118 +1182,125 @@ def add_student():
 def bulk_import_students():
     data = request.json or []
     if not data:
-        return jsonify({'error': 'Không có dữ liệu học sinh để nhập'}), 400
+        return jsonify({'success': False, 'message': 'Không có dữ liệu học sinh để nhập'}), 400
 
     conn = get_db()
     cursor = conn.cursor()
-    is_postgres = 'psycopg' in str(type(conn)).lower() or 'postgres' in str(type(conn)).lower()
 
     success_count = 0
     errors = []
     now_str = datetime.now().strftime("%Y-%m-%d")
 
-    # Find current max student_code as integer
-    cursor.execute("SELECT student_code FROM students;")
-    existing_codes = []
-    for r in cursor.fetchall():
-        val = db_row_value(r, 'student_code', 0)
-        if val is not None:
-            try:
-                existing_codes.append(int(val))
-            except Exception:
-                pass
-    max_code = max(existing_codes) if existing_codes else 0
+    try:
+        # Find current max student_code as integer
+        cursor.execute("SELECT student_code FROM students;")
+        existing_codes = []
+        for r in cursor.fetchall():
+            val = db_row_value(r, 'student_code', 0)
+            if val is not None:
+                try:
+                    existing_codes.append(int(val))
+                except Exception:
+                    pass
+        max_code = max(existing_codes) if existing_codes else 0
 
-    for idx, item in enumerate(data):
-        full_name = item.get('full_name', '').strip()
-        # Always generate student_code sequentially based on the order of rows
-        student_code = str(max_code + idx + 1)
-        class_name = item.get('class_name', '').strip()
-        group_name = item.get('group_name', '').strip()
-        gender = item.get('avatar_gender', 'male').strip().lower()
-        is_leader = 1 if item.get('is_group_leader') else 0
+        for idx, item in enumerate(data):
+            row_num = idx + 2
+            full_name = item.get('full_name', '').strip()
+            # Always generate student_code sequentially based on the order of rows
+            student_code = str(max_code + idx + 1)
+            class_name = item.get('class_name', '').strip()
+            group_name = item.get('group_name', '').strip()
+            
+            # Standardize gender
+            g_raw = item.get('avatar_gender', 'male')
+            if not g_raw:
+                g_raw = 'male'
+            g_raw = str(g_raw).lower()
+            gender = 'female' if 'nữ' in g_raw or 'female' in g_raw else 'male'
+            
+            # Standardize leader to boolean
+            is_leader = True if item.get('is_group_leader') else False
 
-        if not full_name:
-            errors.append(f"Dòng {idx+1}: Họ và tên học sinh không được để trống")
-            continue
+            if not full_name:
+                errors.append(f"Dòng {row_num}: Họ và tên học sinh không được để trống.")
+                continue
 
-        if not class_name:
-            class_name = "Lớp 8A"
-        
-        cursor.execute("SELECT id FROM classes WHERE LOWER(name) = ?;" if not is_postgres else "SELECT id FROM classes WHERE LOWER(name) = %s;", (class_name.lower(),))
-        class_row = cursor.fetchone()
-        if class_row:
-            class_id = db_row_value(class_row, 'id', 0)
-        else:
-            if is_postgres:
-                cursor.execute("INSERT INTO classes (name, grade_level, academic_year) VALUES (%s, %s, %s) RETURNING id;", (class_name, 8, '2025-2026'))
-                class_id = cursor.fetchone()[0]
+            if not class_name:
+                errors.append(f"Dòng {row_num}: Lớp không được để trống.")
+                continue
+            
+            cursor.execute("SELECT id FROM classes WHERE LOWER(name) = LOWER(?);", (class_name,))
+            class_row = cursor.fetchone()
+            if class_row:
+                class_id = db_row_value(class_row, 'id', 0)
             else:
                 cursor.execute("INSERT INTO classes (name, grade_level, academic_year) VALUES (?, 8, '2025-2026');", (class_name,))
                 class_id = cursor.lastrowid
 
-        if not group_name:
-            group_name = "Nhóm 1"
-        
-        import re
-        g_num_match = re.search(r'\d+', group_name)
-        g_num = int(g_num_match.group()) if g_num_match else 1
-        g_name = f"Nhóm {g_num}"
+            if not group_name:
+                errors.append(f"Dòng {row_num}: Nhóm không được để trống.")
+                continue
+            
+            import re
+            g_num_match = re.search(r'\d+', group_name)
+            g_num = int(g_num_match.group()) if g_num_match else 1
+            g_name = f"Nhóm {g_num}"
 
-        cursor.execute("SELECT id FROM groups WHERE class_id = ? AND group_number = ?;" if not is_postgres else "SELECT id FROM groups WHERE class_id = %s AND group_number = %s;", (class_id, g_num))
-        group_row = cursor.fetchone()
-        if group_row:
-            group_id = db_row_value(group_row, 'id', 0)
-        else:
-            if is_postgres:
-                cursor.execute("INSERT INTO groups (class_id, group_number, name) VALUES (%s, %s, %s) RETURNING id;", (class_id, g_num, g_name))
-                group_id = cursor.fetchone()[0]
+            cursor.execute("SELECT id FROM groups WHERE class_id = ? AND group_number = ?;", (class_id, g_num))
+            group_row = cursor.fetchone()
+            if group_row:
+                group_id = db_row_value(group_row, 'id', 0)
             else:
                 cursor.execute("INSERT INTO groups (class_id, group_number, name) VALUES (?, ?, ?);", (class_id, g_num, g_name))
                 group_id = cursor.lastrowid
 
-        try:
-            if is_postgres:
-                cursor.execute("""
-                    INSERT INTO students (student_code, full_name, class_id, group_id, is_group_leader, avatar_gender)
-                    VALUES (%s, %s, %s, %s, %s, %s) RETURNING id;
-                """, (student_code, full_name, class_id, group_id, is_leader, gender))
-                student_id = cursor.fetchone()[0]
-            else:
+            try:
                 cursor.execute("""
                     INSERT INTO students (student_code, full_name, class_id, group_id, is_group_leader, avatar_gender)
                     VALUES (?, ?, ?, ?, ?, ?);
-                """, (student_code, full_name, class_id, group_id, is_leader, gender))
+                """, (student_code, full_name, class_id, group_id, 1 if is_leader else 0, gender))
                 student_id = cursor.lastrowid
 
-            cursor.execute("SELECT id FROM score_types;")
-            st_ids = [db_row_value(r, 'id', 0) for r in cursor.fetchall()]
-            for st_id in st_ids:
-                if is_postgres:
-                    cursor.execute("""
-                        INSERT INTO regular_scores (student_id, score_type_id, score, date_logged, note)
-                        VALUES (%s, %s, 8.0, %s, 'Khởi tạo mặc định');
-                    """, (student_id, st_id, now_str))
-                else:
+                cursor.execute("SELECT id FROM score_types;")
+                st_ids = [db_row_value(r, 'id', 0) for r in cursor.fetchall()]
+                for st_id in st_ids:
                     cursor.execute("""
                         INSERT INTO regular_scores (student_id, score_type_id, score, date_logged, note)
                         VALUES (?, ?, 8.0, ?, 'Khởi tạo mặc định');
                     """, (student_id, st_id, now_str))
 
-            success_count += 1
-        except Exception as e:
-            errors.append(f"Dòng {idx+1}: Lỗi lưu học sinh ({str(e)})")
-            continue
+                success_count += 1
+            except Exception as e:
+                errors.append(f"Dòng {row_num}: Lỗi lưu học sinh {full_name} ({str(e)})")
+                continue
 
-    conn.commit()
-    recalculate_all_final_grades(conn)
-    conn.close()
+        if errors:
+            conn.rollback()
+            conn.close()
+            return jsonify({
+                'success': False,
+                'message': 'Không thể nhập danh sách học sinh do có dòng bị lỗi.',
+                'error': '; '.join(errors)
+            }), 400
 
-    return jsonify({
-        'message': f'Đã nhập thành công {success_count} học sinh.',
-        'success_count': success_count,
-        'errors': errors
-    })
+        conn.commit()
+        recalculate_all_final_grades(conn)
+        conn.close()
+        return jsonify({
+            'success': True,
+            'message': f'Đã nhập thành công {success_count} học sinh.',
+            'success_count': success_count
+        })
+
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        return jsonify({
+            'success': False,
+            'message': 'Lỗi hệ thống khi nhập dữ liệu.',
+            'error': str(e)
+        }), 500
 
 # Delete Student Endpoint
 @app.route('/api/student/<int:student_id>', methods=['DELETE'])
@@ -1158,9 +1368,9 @@ def edit_student(student_id):
         conn.close()
 
         return jsonify({'message': f'Cập nhật hồ sơ học sinh {full_name} thành công!'}), 200
-    except sqlite3.IntegrityError:
+    except Exception as e:
         conn.close()
-        return jsonify({'error': f'Mã học sinh "{student_code}" đã tồn tại trên hệ thống.'}), 400
+        return jsonify({'error': f'Lỗi hệ thống hoặc mã học sinh "{student_code}" đã tồn tại. Chi tiết: {str(e)}'}), 400
 
 # Add Teacher Comment & Badge Endpoint
 @app.route('/api/student/<int:student_id>/comment', methods=['POST'])
@@ -1205,19 +1415,19 @@ def get_system_metrics():
     cursor = conn.cursor()
 
     cursor.execute("SELECT COUNT(*) FROM students;")
-    students_count = cursor.fetchone()[0]
+    students_count = db_row_value(cursor.fetchone(), 'count', 0) or 0
 
     cursor.execute("SELECT COUNT(*) FROM groups;")
-    groups_count = cursor.fetchone()[0]
+    groups_count = db_row_value(cursor.fetchone(), 'count', 0) or 0
 
     cursor.execute("SELECT COUNT(*) FROM bonus_penalty_logs;")
-    logs_count = cursor.fetchone()[0]
+    logs_count = db_row_value(cursor.fetchone(), 'count', 0) or 0
 
     cursor.execute("SELECT COUNT(*) FROM regular_scores;")
-    scores_count = cursor.fetchone()[0]
+    scores_count = db_row_value(cursor.fetchone(), 'count', 0) or 0
 
     cursor.execute("SELECT COUNT(*) FROM teacher_comments;")
-    comments_count = cursor.fetchone()[0]
+    comments_count = db_row_value(cursor.fetchone(), 'count', 0) or 0
 
     conn.close()
 
