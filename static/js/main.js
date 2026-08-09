@@ -1578,9 +1578,46 @@ function onScoreClassFilterChange() {
 }
 
 // --- EXCEL BULK IMPORT HANDLERS ---
+let pendingImportStudents = [];
+
+function downloadExcelTemplate() {
+  const wb = XLSX.utils.book_new();
+  const headers = ["Họ và Tên", "Lớp", "Nhóm", "Giới Tính", "Nhóm Trưởng", "Mã HS"];
+  
+  const sampleData = [
+    {
+      "Họ và Tên": "Nguyễn Văn An",
+      "Lớp": "Lớp 8A",
+      "Nhóm": "Nhóm 1",
+      "Giới Tính": "Nam",
+      "Nhóm Trưởng": "Không",
+      "Mã HS": "HS001"
+    },
+    {
+      "Họ và Tên": "Trần Thị Bình",
+      "Lớp": "Lớp 8A",
+      "Nhóm": "Nhóm 2",
+      "Giới Tính": "Nữ",
+      "Nhóm Trưởng": "Có",
+      "Mã HS": "HS002"
+    }
+  ];
+  
+  const ws = XLSX.utils.json_to_sheet(sampleData, { header: headers });
+  XLSX.utils.book_append_sheet(wb, ws, "Danh Sach Hoc Sinh");
+  XLSX.writeFile(wb, "Mau_Danh_Sach_Hoc_Sinh.xlsx");
+  showToast("Đã tải xuống file Excel mẫu thành công!", "success");
+}
+
 function triggerExcelInput() {
   const inp = document.getElementById('excel-file-input');
   if (inp) inp.click();
+}
+
+function closePreviewImportModal() {
+  const modal = document.getElementById('modal-preview-import');
+  if (modal) modal.classList.add('hidden');
+  pendingImportStudents = [];
 }
 
 async function handleExcelUpload(event) {
@@ -1601,53 +1638,128 @@ async function handleExcelUpload(event) {
         return;
       }
 
-      // Map spreadsheet columns to database model fields
-      const students = json.map(row => {
-        const student_code = String(row['Mã HS'] || row['Mã Số'] || row['Mã học sinh'] || row['student_code'] || row['ma_hs'] || '').trim();
-        const full_name = String(row['Họ và Tên'] || row['Họ Tên'] || row['Tên'] || row['full_name'] || row['ho_ten'] || '').trim();
-        const class_name = String(row['Lớp'] || row['class_name'] || row['lop'] || '').trim();
-        const group_name = String(row['Nhóm'] || row['Tổ'] || row['group_name'] || row['nhom'] || '').trim();
-        
+      const errors = [];
+      const validStudents = [];
+      const seenExcelStudents = new Set();
+
+      json.forEach((row, idx) => {
+        const rowNum = idx + 2;
+
+        const fullName = String(row['Họ và Tên'] || row['Họ Tên'] || row['Tên'] || row['full_name'] || row['ho_ten'] || '').trim();
+        const className = String(row['Lớp'] || row['class_name'] || row['lop'] || '').trim();
+        const groupName = String(row['Nhóm'] || row['Tổ'] || row['group_name'] || row['nhom'] || '').trim();
         let gender = String(row['Giới Tính'] || row['Giới tính'] || row['gender'] || row['gioi_tinh'] || 'Nam').trim();
+        let isLeader = row['Nhóm Trưởng'] || row['Leader'] || row['nhom_truong'] || false;
+        let studentCode = String(row['Mã HS'] || row['Mã Số'] || row['Mã học sinh'] || row['student_code'] || row['ma_hs'] || '').trim();
+
+        // 1. Họ và tên không được để trống
+        if (!fullName) {
+          errors.push(`Dòng ${rowNum}: Họ và tên không được để trống.`);
+        }
+
+        // 2. Lớp không được để trống
+        if (!className) {
+          errors.push(`Dòng ${rowNum}: Lớp không được để trống.`);
+        }
+
+        // 3. Nhóm KHTN phải là số nhóm hợp lệ (1-8)
+        let groupNum = null;
+        const match = groupName.match(/\d+/);
+        if (match) {
+          groupNum = parseInt(match[0]);
+        }
+        if (groupNum === null || groupNum < 1 || groupNum > 8) {
+          errors.push(`Dòng ${rowNum}: Nhóm KHTN không hợp lệ (Phải từ 1 đến 8, ví dụ: Nhóm 1, Nhóm 2...).`);
+        }
+
+        if (fullName && className) {
+          const comboKey = `${fullName.toLowerCase()}||${className.toLowerCase()}`;
+
+          // 4. Không cho nhập trùng học sinh trong file Excel
+          if (seenExcelStudents.has(comboKey)) {
+            errors.push(`Dòng ${rowNum}: Học sinh "${fullName}" lớp "${className}" bị trùng lặp trong file Excel.`);
+          } else {
+            seenExcelStudents.add(comboKey);
+          }
+
+          // 5. Không cho nhập trùng học sinh đã tồn tại trong DB
+          const isDbDuplicate = studentsData.some(s => 
+            s.full_name.toLowerCase().trim() === fullName.toLowerCase() && 
+            s.class_name.toLowerCase().trim() === className.toLowerCase()
+          );
+          if (isDbDuplicate) {
+            errors.push(`Dòng ${rowNum}: Học sinh "${fullName}" lớp "${className}" đã tồn tại trên hệ thống.`);
+          }
+        }
+
+        // Standardize gender and isLeader
         gender = (gender.toLowerCase().includes('nữ') || gender.toLowerCase().includes('female')) ? 'female' : 'male';
-        
-        let is_leader = row['Nhóm Trưởng'] || row['Leader'] || row['nhom_truong'] || false;
-        if (typeof is_leader === 'string') {
-          is_leader = is_leader.toLowerCase().includes('có') || is_leader.toLowerCase().includes('yes') || is_leader.toLowerCase() === 'x' || is_leader.toLowerCase() === '1';
-        } else if (typeof is_leader === 'number') {
-          is_leader = is_leader === 1;
+        if (typeof isLeader === 'string') {
+          isLeader = isLeader.toLowerCase().includes('có') || isLeader.toLowerCase().includes('yes') || isLeader.toLowerCase() === 'x' || isLeader.toLowerCase() === '1';
+        } else if (typeof isLeader === 'number') {
+          isLeader = isLeader === 1;
         }
 
-        return { student_code, full_name, class_name, group_name, avatar_gender: gender, is_group_leader: is_leader };
-      }).filter(s => s.student_code && s.full_name);
-
-      if (students.length === 0) {
-        showToast("Không tìm thấy học sinh hợp lệ (Cần cột Họ và Tên, Mã HS)!", "error");
-        return;
-      }
-
-      showToast(`Đang tải lên ${students.length} học sinh...`, "info");
-
-      const res = await fetch('/api/students/bulk-import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(students)
+        if (fullName && className && groupNum !== null && groupNum >= 1 && groupNum <= 8) {
+          validStudents.push({
+            student_code: studentCode,
+            full_name: fullName,
+            class_name: className,
+            group_name: `Nhóm ${groupNum}`,
+            avatar_gender: gender,
+            is_group_leader: isLeader
+          });
+        }
       });
-      const resData = await res.json();
-      
-      if (res.ok) {
-        let msg = `Đã nhập thành công ${resData.success_count} học sinh!`;
-        if (resData.errors && resData.errors.length > 0) {
-          msg += ` Phát hiện ${resData.errors.length} lỗi.`;
-          console.warn("Bulk import errors:", resData.errors);
-          showToast(`Nhập thành công ${resData.success_count} HS. Dòng lỗi: ${resData.errors[0]}`, "warning");
-        } else {
-          showToast(msg, "success");
+
+      // Render errors
+      const errBox = document.getElementById('import-errors-box');
+      const errList = document.getElementById('import-errors-list');
+      const btnConfirm = document.getElementById('btn-confirm-import');
+
+      if (errors.length > 0) {
+        errBox.classList.remove('hidden');
+        errList.innerHTML = '';
+        errors.forEach(err => {
+          const li = document.createElement('li');
+          li.innerText = err;
+          errList.appendChild(li);
+        });
+        if (btnConfirm) {
+          btnConfirm.disabled = true;
+          btnConfirm.classList.add('opacity-50', 'cursor-not-allowed');
         }
-        await loadInitialData();
       } else {
-        showToast(resData.error || "Nhập danh sách học sinh thất bại!", "error");
+        errBox.classList.add('hidden');
+        errList.innerHTML = '';
+        if (btnConfirm) {
+          btnConfirm.disabled = false;
+          btnConfirm.classList.remove('opacity-50', 'cursor-not-allowed');
+        }
       }
+
+      // Render Preview Body
+      const previewBody = document.getElementById('table-preview-import-body');
+      previewBody.innerHTML = '';
+      document.getElementById('import-preview-count').innerText = `Số học sinh hợp lệ để nhập: ${validStudents.length}`;
+
+      validStudents.forEach(s => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td class="p-2.5 font-semibold text-white">${s.full_name}</td>
+          <td class="p-2.5 text-slate-300">${s.class_name}</td>
+          <td class="p-2.5 text-center text-slate-300">${s.group_name}</td>
+          <td class="p-2.5 text-center text-slate-300">${s.avatar_gender === 'female' ? 'Nữ' : 'Nam'}</td>
+          <td class="p-2.5 text-center">${s.is_group_leader ? '<span class="text-amber-400 font-bold">👑 Nhóm Trưởng</span>' : 'Thành viên'}</td>
+        `;
+        previewBody.appendChild(tr);
+      });
+
+      pendingImportStudents = validStudents;
+      
+      const modal = document.getElementById('modal-preview-import');
+      if (modal) modal.classList.remove('hidden');
+
     } catch (err) {
       console.error("Excel parse error:", err);
       showToast("Lỗi khi giải mã file Excel!", "error");
@@ -1655,6 +1767,35 @@ async function handleExcelUpload(event) {
     event.target.value = '';
   };
   reader.readAsArrayBuffer(file);
+}
+
+async function confirmExcelImport() {
+  if (pendingImportStudents.length === 0) {
+    showToast("Không có học sinh nào hợp lệ để nhập!", "warning");
+    return;
+  }
+
+  showToast(`Đang tải lên ${pendingImportStudents.length} học sinh...`, "info");
+
+  try {
+    const res = await fetch('/api/students/bulk-import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(pendingImportStudents)
+    });
+    const resData = await res.json();
+    
+    if (res.ok) {
+      showToast(`Đã nhập thành công ${resData.success_count} học sinh!`, "success");
+      closePreviewImportModal();
+      await loadInitialData();
+    } else {
+      showToast(resData.error || "Nhập danh sách học sinh thất bại!", "error");
+    }
+  } catch (err) {
+    console.error("Import submit error:", err);
+    showToast("Lỗi hệ thống khi gửi yêu cầu nhập!", "error");
+  }
 }
 
 function triggerExcelScoreInput() {
