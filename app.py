@@ -102,7 +102,7 @@ def get_db():
             return PostgresConnectionProxy(conn)
         except Exception as e:
             import traceback
-            db_error_trace = f"Connection error for resolved {resolved_url} (original: {DATABASE_URL}): {str(e)}\n{traceback.format_exc()}"
+            db_error_trace = (db_error_trace or "") + f"\nConnection error for resolved {resolved_url} (original: {DATABASE_URL}): {str(e)}\n{traceback.format_exc()}"
             raise e
     else:
         conn = sqlite3.connect(DB_FILE)
