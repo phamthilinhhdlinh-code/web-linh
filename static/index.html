@@ -191,6 +191,9 @@
           </div>
           <div id="classes-admin-actions" class="flex items-center gap-2">
             <input type="file" id="excel-file-input" accept=".xlsx, .xls, .csv" style="display: none;" onchange="handleExcelUpload(event)">
+            <button onclick="downloadExcelTemplate()" class="bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-500/30 px-4 py-2 rounded-xl text-xs font-semibold transition flex items-center gap-1.5">
+              <i class="fa-solid fa-file-arrow-down"></i> Tải File Excel Mẫu
+            </button>
             <button onclick="triggerExcelInput()" class="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-xl text-xs font-semibold shadow transition flex items-center gap-1.5">
               <i class="fa-solid fa-file-excel"></i> Nhập Từ Excel
             </button>
@@ -1187,6 +1190,57 @@ CREATE TABLE final_grades (
           </button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Modal: Preview Excel Import -->
+  <div id="modal-preview-import" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center hidden p-4">
+    <div class="glass-card max-w-3xl w-full p-6 border-t-4 border-indigo-500 space-y-4 max-h-[85vh] overflow-y-auto">
+      <div class="flex items-center justify-between border-b border-white/10 pb-3">
+        <h3 class="text-lg font-bold text-white flex items-center gap-2">
+          <i class="fa-solid fa-file-magnifying-glass text-indigo-400"></i> Xem Trước Danh Sách Nhập Từ Excel
+        </h3>
+        <button onclick="closePreviewImportModal()" class="text-slate-400 hover:text-white transition"><i class="fa-solid fa-xmark text-lg"></i></button>
+      </div>
+
+      <!-- Errors Section (Hidden by default) -->
+      <div id="import-errors-box" class="hidden bg-rose-950/30 border border-rose-500/30 p-4 rounded-xl text-rose-300 text-xs space-y-1.5">
+        <div class="font-bold flex items-center gap-1.5 text-rose-400 mb-1">
+          <i class="fa-solid fa-triangle-exclamation"></i> Phát hiện lỗi trong file Excel (Cần sửa lại trước khi nhập):
+        </div>
+        <ul id="import-errors-list" class="list-disc list-inside space-y-1">
+          <!-- Dynamically populated -->
+        </ul>
+      </div>
+
+      <!-- Preview Table -->
+      <div class="space-y-2">
+        <div class="text-xs text-slate-400 font-semibold" id="import-preview-count">Số học sinh hợp lệ: 0</div>
+        <div class="overflow-x-auto border border-white/5 rounded-lg max-h-60">
+          <table class="w-full text-left text-xs text-slate-300">
+            <thead class="bg-slate-900 text-slate-400 uppercase">
+              <tr>
+                <th class="p-2.5">Họ Và Tên</th>
+                <th class="p-2.5">Lớp</th>
+                <th class="p-2.5 text-center">Nhóm KHTN</th>
+                <th class="p-2.5 text-center">Giới Tính</th>
+                <th class="p-2.5 text-center">Nhóm Trưởng</th>
+              </tr>
+            </thead>
+            <tbody id="table-preview-import-body" class="divide-y divide-white/5 bg-slate-950/40">
+              <!-- Dynamically populated -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="flex items-center justify-end gap-3 pt-3 border-t border-white/10">
+        <button id="btn-confirm-import" onclick="confirmExcelImport()" class="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-xl text-xs font-semibold shadow transition flex items-center gap-1.5">
+          <i class="fa-solid fa-circle-check"></i> Xác Nhận Nhập
+        </button>
+        <button type="button" onclick="closePreviewImportModal()" class="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-2 rounded-xl text-xs transition">Hủy</button>
+      </div>
     </div>
   </div>
 
