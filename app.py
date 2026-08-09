@@ -14,6 +14,19 @@ def get_db():
     conn.row_factory = sqlite3.Row
     return conn
 
+def db_row_value(row, col_name, col_index=0):
+    if row is None:
+        return None
+    try:
+        return row[col_name]
+    except Exception:
+        pass
+    try:
+        return row[col_index]
+    except Exception:
+        pass
+    return None
+
 def init_db():
     conn = get_db()
     cursor = conn.cursor()
@@ -902,50 +915,65 @@ def add_student():
 
     conn = get_db()
     cursor = conn.cursor()
+    is_postgres = 'psycopg' in str(type(conn)).lower() or 'postgres' in str(type(conn)).lower()
 
     if not student_code:
         # Generate sequentially
         cursor.execute("SELECT student_code FROM students;")
         existing_codes = []
         for r in cursor.fetchall():
-            try:
-                code = r['student_code'] if isinstance(r, dict) or not hasattr(r, 'keys') else r['student_code']
-                existing_codes.append(int(code))
-            except Exception:
-                pass
+            val = db_row_value(r, 'student_code', 0)
+            if val is not None:
+                try:
+                    existing_codes.append(int(val))
+                except Exception:
+                    pass
         max_code = max(existing_codes) if existing_codes else 0
         student_code = str(max_code + 1)
 
     # Get class_id
-    cursor.execute("SELECT class_id FROM groups WHERE id = ?;", (group_id,))
+    cursor.execute("SELECT class_id FROM groups WHERE id = ?;" if not is_postgres else "SELECT class_id FROM groups WHERE id = %s;", (group_id,))
     grow = cursor.fetchone()
-    class_id = grow['class_id'] if grow else 1
+    class_id = db_row_value(grow, 'class_id', 0) if grow else 1
 
     try:
-        cursor.execute("""
-            INSERT INTO students (student_code, full_name, class_id, group_id, is_group_leader, avatar_gender)
-            VALUES (?, ?, ?, ?, ?, ?);
-        """, (student_code, full_name, class_id, group_id, is_leader, gender))
-        student_id = cursor.lastrowid
+        if is_postgres:
+            cursor.execute("""
+                INSERT INTO students (student_code, full_name, class_id, group_id, is_group_leader, avatar_gender)
+                VALUES (%s, %s, %s, %s, %s, %s) RETURNING id;
+            """, (student_code, full_name, class_id, group_id, is_leader, gender))
+            student_id = cursor.fetchone()[0]
+        else:
+            cursor.execute("""
+                INSERT INTO students (student_code, full_name, class_id, group_id, is_group_leader, avatar_gender)
+                VALUES (?, ?, ?, ?, ?, ?);
+            """, (student_code, full_name, class_id, group_id, is_leader, gender))
+            student_id = cursor.lastrowid
 
         # Insert default scores (8.0 default for all 4 types)
         cursor.execute("SELECT id FROM score_types;")
-        st_ids = [r['id'] for r in cursor.fetchall()]
+        st_ids = [db_row_value(r, 'id', 0) for r in cursor.fetchall()]
         now_str = datetime.now().strftime("%Y-%m-%d")
         for st_id in st_ids:
-            cursor.execute("""
-                INSERT INTO regular_scores (student_id, score_type_id, score, date_logged, note)
-                VALUES (?, ?, 8.0, ?, 'Khởi tạo mặc định');
-            """, (student_id, st_id, now_str))
+            if is_postgres:
+                cursor.execute("""
+                    INSERT INTO regular_scores (student_id, score_type_id, score, date_logged, note)
+                    VALUES (%s, %s, 8.0, %s, 'Khởi tạo mặc định');
+                """, (student_id, st_id, now_str))
+            else:
+                cursor.execute("""
+                    INSERT INTO regular_scores (student_id, score_type_id, score, date_logged, note)
+                    VALUES (?, ?, 8.0, ?, 'Khởi tạo mặc định');
+                """, (student_id, st_id, now_str))
 
         conn.commit()
         recalculate_all_final_grades(conn)
         conn.close()
 
         return jsonify({'message': f'Thêm học sinh {full_name} ({student_code}) thành công!', 'id': student_id}), 201
-    except sqlite3.IntegrityError:
+    except Exception as e:
         conn.close()
-        return jsonify({'error': f'Mã học sinh "{student_code}" đã tồn tại trên hệ thống.'}), 400
+        return jsonify({'error': f'Lỗi hệ thống hoặc mã học sinh "{student_code}" đã tồn tại. Chi tiết: {str(e)}'}), 400
 
 @app.route('/api/students/bulk-import', methods=['POST'])
 def bulk_import_students():
@@ -955,6 +983,7 @@ def bulk_import_students():
 
     conn = get_db()
     cursor = conn.cursor()
+    is_postgres = 'psycopg' in str(type(conn)).lower() or 'postgres' in str(type(conn)).lower()
 
     success_count = 0
     errors = []
@@ -964,13 +993,10 @@ def bulk_import_students():
     cursor.execute("SELECT student_code FROM students;")
     existing_codes = []
     for r in cursor.fetchall():
-        try:
-            code = r['student_code'] if isinstance(r, dict) or not hasattr(r, 'keys') else r['student_code']
-            existing_codes.append(int(code))
-        except (ValueError, TypeError, KeyError):
+        val = db_row_value(r, 'student_code', 0)
+        if val is not None:
             try:
-                code = r[0]
-                existing_codes.append(int(code))
+                existing_codes.append(int(val))
             except Exception:
                 pass
     max_code = max(existing_codes) if existing_codes else 0
@@ -991,13 +1017,17 @@ def bulk_import_students():
         if not class_name:
             class_name = "Lớp 8A"
         
-        cursor.execute("SELECT id FROM classes WHERE LOWER(name) = ?;", (class_name.lower(),))
+        cursor.execute("SELECT id FROM classes WHERE LOWER(name) = ?;" if not is_postgres else "SELECT id FROM classes WHERE LOWER(name) = %s;", (class_name.lower(),))
         class_row = cursor.fetchone()
         if class_row:
-            class_id = class_row['id']
+            class_id = db_row_value(class_row, 'id', 0)
         else:
-            cursor.execute("INSERT INTO classes (name, grade_level, academic_year) VALUES (?, 8, '2025-2026');", (class_name,))
-            class_id = cursor.lastrowid
+            if is_postgres:
+                cursor.execute("INSERT INTO classes (name, grade_level, academic_year) VALUES (%s, %s, %s) RETURNING id;", (class_name, 8, '2025-2026'))
+                class_id = cursor.fetchone()[0]
+            else:
+                cursor.execute("INSERT INTO classes (name, grade_level, academic_year) VALUES (?, 8, '2025-2026');", (class_name,))
+                class_id = cursor.lastrowid
 
         if not group_name:
             group_name = "Nhóm 1"
@@ -1007,32 +1037,49 @@ def bulk_import_students():
         g_num = int(g_num_match.group()) if g_num_match else 1
         g_name = f"Nhóm {g_num}"
 
-        cursor.execute("SELECT id FROM groups WHERE class_id = ? AND group_number = ?;", (class_id, g_num))
+        cursor.execute("SELECT id FROM groups WHERE class_id = ? AND group_number = ?;" if not is_postgres else "SELECT id FROM groups WHERE class_id = %s AND group_number = %s;", (class_id, g_num))
         group_row = cursor.fetchone()
         if group_row:
-            group_id = group_row['id']
+            group_id = db_row_value(group_row, 'id', 0)
         else:
-            cursor.execute("INSERT INTO groups (class_id, group_number, name) VALUES (?, ?, ?);", (class_id, g_num, g_name))
-            group_id = cursor.lastrowid
+            if is_postgres:
+                cursor.execute("INSERT INTO groups (class_id, group_number, name) VALUES (%s, %s, %s) RETURNING id;", (class_id, g_num, g_name))
+                group_id = cursor.fetchone()[0]
+            else:
+                cursor.execute("INSERT INTO groups (class_id, group_number, name) VALUES (?, ?, ?);", (class_id, g_num, g_name))
+                group_id = cursor.lastrowid
 
         try:
-            cursor.execute("""
-                INSERT INTO students (student_code, full_name, class_id, group_id, is_group_leader, avatar_gender)
-                VALUES (?, ?, ?, ?, ?, ?);
-            """, (student_code, full_name, class_id, group_id, is_leader, gender))
-            student_id = cursor.lastrowid
+            if is_postgres:
+                cursor.execute("""
+                    INSERT INTO students (student_code, full_name, class_id, group_id, is_group_leader, avatar_gender)
+                    VALUES (%s, %s, %s, %s, %s, %s) RETURNING id;
+                """, (student_code, full_name, class_id, group_id, is_leader, gender))
+                student_id = cursor.fetchone()[0]
+            else:
+                cursor.execute("""
+                    INSERT INTO students (student_code, full_name, class_id, group_id, is_group_leader, avatar_gender)
+                    VALUES (?, ?, ?, ?, ?, ?);
+                """, (student_code, full_name, class_id, group_id, is_leader, gender))
+                student_id = cursor.lastrowid
 
             cursor.execute("SELECT id FROM score_types;")
-            st_ids = [r['id'] for r in cursor.fetchall()]
+            st_ids = [db_row_value(r, 'id', 0) for r in cursor.fetchall()]
             for st_id in st_ids:
-                cursor.execute("""
-                    INSERT INTO regular_scores (student_id, score_type_id, score, date_logged, note)
-                    VALUES (?, ?, 8.0, ?, 'Khởi tạo mặc định');
-                """, (student_id, st_id, now_str))
+                if is_postgres:
+                    cursor.execute("""
+                        INSERT INTO regular_scores (student_id, score_type_id, score, date_logged, note)
+                        VALUES (%s, %s, 8.0, %s, 'Khởi tạo mặc định');
+                    """, (student_id, st_id, now_str))
+                else:
+                    cursor.execute("""
+                        INSERT INTO regular_scores (student_id, score_type_id, score, date_logged, note)
+                        VALUES (?, ?, 8.0, ?, 'Khởi tạo mặc định');
+                    """, (student_id, st_id, now_str))
 
             success_count += 1
-        except sqlite3.IntegrityError:
-            errors.append(f"Dòng {idx+1}: Mã học sinh '{student_code}' đã tồn tại")
+        except Exception as e:
+            errors.append(f"Dòng {idx+1}: Lỗi lưu học sinh ({str(e)})")
             continue
 
     conn.commit()
