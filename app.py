@@ -78,7 +78,32 @@ def get_db():
     if DATABASE_URL:
         import psycopg
         from psycopg.rows import dict_row
-        conn = psycopg.connect(DATABASE_URL, sslmode='require', row_factory=dict_row)
+        import urllib.parse
+        import socket
+
+        # Resolve hostname to IPv4 dynamically to prevent Vercel IPv6 connection errors
+        resolved_url = DATABASE_URL
+        try:
+            parsed = urllib.parse.urlparse(DATABASE_URL)
+            netloc = parsed.netloc
+            auth = ""
+            host_port = netloc
+            if "@" in netloc:
+                auth, host_port = netloc.split("@", 1)
+                auth = auth + "@"
+            host = host_port
+            port = ""
+            if ":" in host_port:
+                host, port = host_port.split(":", 1)
+                port = ":" + port
+            
+            ipv4 = socket.gethostbyname(host)
+            new_netloc = f"{auth}{ipv4}{port}"
+            resolved_url = urllib.parse.urlunparse(parsed._replace(netloc=new_netloc))
+        except Exception:
+            pass
+
+        conn = psycopg.connect(resolved_url, sslmode='require', row_factory=dict_row)
         return PostgresConnectionProxy(conn)
     else:
         conn = sqlite3.connect(DB_FILE)
