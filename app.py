@@ -368,6 +368,12 @@ def init_db():
 
     conn.close()
 
+# Initialize database on module import (required for serverless platforms like Vercel)
+try:
+    init_db()
+except Exception as e:
+    app.logger.error(f"Database initialization error: {str(e)}")
+
 def seed_data(conn):
     cursor = conn.cursor()
 
@@ -1184,14 +1190,15 @@ def bulk_import_students():
     if not data:
         return jsonify({'success': False, 'message': 'Không có dữ liệu học sinh để nhập'}), 400
 
-    conn = get_db()
-    cursor = conn.cursor()
-
+    conn = None
     success_count = 0
     errors = []
     now_str = datetime.now().strftime("%Y-%m-%d")
 
     try:
+        conn = get_db()
+        cursor = conn.cursor()
+
         # Find current max student_code as integer
         cursor.execute("SELECT student_code FROM students;")
         existing_codes = []
@@ -1276,8 +1283,9 @@ def bulk_import_students():
                 continue
 
         if errors:
-            conn.rollback()
-            conn.close()
+            if conn is not None:
+                conn.rollback()
+                conn.close()
             return jsonify({
                 'success': False,
                 'message': 'Không thể nhập danh sách học sinh do có dòng bị lỗi.',
@@ -1294,8 +1302,15 @@ def bulk_import_students():
         })
 
     except Exception as e:
-        conn.rollback()
-        conn.close()
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            try:
+                conn.close()
+            except Exception:
+                pass
         return jsonify({
             'success': False,
             'message': 'Lỗi hệ thống khi nhập dữ liệu.',
