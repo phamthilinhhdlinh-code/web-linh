@@ -1843,7 +1843,14 @@ async function confirmExcelImport() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(pendingImportStudents)
     });
-    const resData = await res.json();
+    
+    let resData;
+    const text = await res.text();
+    try {
+      resData = JSON.parse(text);
+    } catch(e) {
+      resData = { error: `Lỗi Server (${res.status}): ${text.substring(0, 150)}` };
+    }
     
     if (res.ok) {
       showToast(`Đã nhập thành công ${resData.success_count} học sinh!`, "success");
@@ -1854,7 +1861,7 @@ async function confirmExcelImport() {
     }
   } catch (err) {
     console.error("Import submit error:", err);
-    showToast("Lỗi hệ thống khi gửi yêu cầu nhập!", "error");
+    showToast(`Lỗi kết nối mạng: ${err.message}`, "error");
   }
 }
 
