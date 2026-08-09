@@ -1498,6 +1498,17 @@ def serve_index():
 def serve_static(path):
     return send_from_directory('static', path)
 
+@app.errorhandler(500)
+def handle_500(e):
+    import traceback
+    tb = traceback.format_exc()
+    app.logger.error(f"Internal Server Error: {tb}")
+    return jsonify({
+        "success": False,
+        "message": "Lỗi Server Internal.",
+        "error": f"Traceback: {tb}"
+    }), 500
+
 if __name__ == '__main__':
     print("Initializing SQLite Database...")
     init_db()
