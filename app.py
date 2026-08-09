@@ -93,9 +93,10 @@ def get_db():
             if host:
                 ipv4 = socket.gethostbyname(host)
                 resolved_url = make_conninfo(DATABASE_URL, host=ipv4)
+                db_error_trace = f"Resolution success: resolved {host} to IPv4 {ipv4}"
         except Exception as e:
             import traceback
-            db_error_trace = f"Resolution error: {str(e)}\n{traceback.format_exc()}"
+            db_error_trace = f"Resolution error for host {parsed.hostname if 'parsed' in locals() else 'unknown'}: {str(e)}\n{traceback.format_exc()}"
 
         try:
             conn = psycopg.connect(resolved_url, sslmode='require', row_factory=dict_row)
