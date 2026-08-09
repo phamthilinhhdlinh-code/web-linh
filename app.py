@@ -897,11 +897,24 @@ def add_student():
     gender = data.get('avatar_gender', 'male')
     is_leader = 1 if data.get('is_group_leader') else 0
 
-    if not full_name or not student_code:
-        return jsonify({'error': 'Tên và Mã học sinh không được để trống'}), 400
+    if not full_name:
+        return jsonify({'error': 'Tên học sinh không được để trống'}), 400
 
     conn = get_db()
     cursor = conn.cursor()
+
+    if not student_code:
+        # Generate sequentially
+        cursor.execute("SELECT student_code FROM students;")
+        existing_codes = []
+        for r in cursor.fetchall():
+            try:
+                code = r['student_code'] if isinstance(r, dict) or not hasattr(r, 'keys') else r['student_code']
+                existing_codes.append(int(code))
+            except Exception:
+                pass
+        max_code = max(existing_codes) if existing_codes else 0
+        student_code = str(max_code + 1)
 
     # Get class_id
     cursor.execute("SELECT class_id FROM groups WHERE id = ?;", (group_id,))
@@ -947,9 +960,25 @@ def bulk_import_students():
     errors = []
     now_str = datetime.now().strftime("%Y-%m-%d")
 
+    # Find current max student_code as integer
+    cursor.execute("SELECT student_code FROM students;")
+    existing_codes = []
+    for r in cursor.fetchall():
+        try:
+            code = r['student_code'] if isinstance(r, dict) or not hasattr(r, 'keys') else r['student_code']
+            existing_codes.append(int(code))
+        except (ValueError, TypeError, KeyError):
+            try:
+                code = r[0]
+                existing_codes.append(int(code))
+            except Exception:
+                pass
+    max_code = max(existing_codes) if existing_codes else 0
+
     for idx, item in enumerate(data):
         full_name = item.get('full_name', '').strip()
-        student_code = item.get('student_code', '').strip().upper()
+        # Always generate student_code sequentially based on the order of rows
+        student_code = str(max_code + idx + 1)
         class_name = item.get('class_name', '').strip()
         group_name = item.get('group_name', '').strip()
         gender = item.get('avatar_gender', 'male').strip().lower()
@@ -958,12 +987,6 @@ def bulk_import_students():
         if not full_name:
             errors.append(f"Dòng {idx+1}: Họ và tên học sinh không được để trống")
             continue
-
-        if not student_code:
-            import random
-            import string
-            random_suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-            student_code = f"HS_{random_suffix}"
 
         if not class_name:
             class_name = "Lớp 8A"
@@ -1052,11 +1075,17 @@ def edit_student(student_id):
     gender = data.get('avatar_gender', 'male')
     is_leader = 1 if data.get('is_group_leader') else 0
 
-    if not full_name or not student_code:
-        return jsonify({'error': 'Tên và Mã học sinh không được để trống'}), 400
+    if not full_name:
+        return jsonify({'error': 'Tên học sinh không được để trống'}), 400
 
     conn = get_db()
     cursor = conn.cursor()
+
+    if not student_code:
+        cursor.execute("SELECT student_code FROM students WHERE id = ?;", (student_id,))
+        srow = cursor.fetchone()
+        if srow:
+            student_code = srow['student_code'] if isinstance(srow, dict) or not hasattr(srow, 'keys') else srow['student_code']
 
     # Verify if student exists
     cursor.execute("SELECT id FROM students WHERE id = ?;", (student_id,))
