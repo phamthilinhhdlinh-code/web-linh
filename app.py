@@ -74,7 +74,10 @@ class PostgresConnectionProxy:
             self.commit()
         self.close()
 
+db_error_trace = None
+
 def get_db():
+    global db_error_trace
     if DATABASE_URL:
         import psycopg
         from psycopg.rows import dict_row
@@ -100,11 +103,17 @@ def get_db():
             ipv4 = socket.gethostbyname(host)
             new_netloc = f"{auth}{ipv4}{port}"
             resolved_url = urllib.parse.urlunparse(parsed._replace(netloc=new_netloc))
-        except Exception:
-            pass
+        except Exception as e:
+            import traceback
+            db_error_trace = f"Resolution error: {str(e)}\n{traceback.format_exc()}"
 
-        conn = psycopg.connect(resolved_url, sslmode='require', row_factory=dict_row)
-        return PostgresConnectionProxy(conn)
+        try:
+            conn = psycopg.connect(resolved_url, sslmode='require', row_factory=dict_row)
+            return PostgresConnectionProxy(conn)
+        except Exception as e:
+            import traceback
+            db_error_trace = f"Connection error for resolved {resolved_url} (original: {DATABASE_URL}): {str(e)}\n{traceback.format_exc()}"
+            raise e
     else:
         conn = sqlite3.connect(DB_FILE)
         conn.row_factory = sqlite3.Row
@@ -1527,11 +1536,13 @@ def serve_static(path):
 def handle_500(e):
     import traceback
     tb = traceback.format_exc()
+    global db_error_trace
     app.logger.error(f"Internal Server Error: {tb}")
     return jsonify({
         "success": False,
         "message": "Lỗi Server Internal.",
-        "error": f"Traceback: {tb}"
+        "error": f"Traceback: {tb}",
+        "db_debug": db_error_trace
     }), 500
 
 if __name__ == '__main__':
