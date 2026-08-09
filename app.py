@@ -1,96 +1,156 @@
 import os
-import re
+import sqlite3
 from datetime import datetime
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
-import psycopg
-from psycopg import sql
-from psycopg.errors import IntegrityError
 
 app = Flask(__name__, static_folder='static')
 CORS(app)
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
-
-class CompatRow(dict):
-    def __getitem__(self, key):
-        if isinstance(key, int):
-            return tuple(self.values())[key]
-        return super().__getitem__(key)
-
-class CompatCursor:
-    def __init__(self, cursor):
-        self._cursor = cursor
-        self._lastrowid = None
-
-    def execute(self, query, params=None):
-        # SQLite uses '?' placeholders; PostgreSQL/psycopg uses '%s'.
-        query = query.replace("?", "%s")
-        # The old startup migrations/schema are not needed because Supabase
-        # schema is created separately.
-        if query.strip().upper().startswith("PRAGMA "):
-            self._lastrowid = None
-            return self
-
-        # Preserve the app's existing INSERT + lastrowid behavior.
-        # PostgreSQL has no cursor.lastrowid, so add RETURNING id for inserts.
-        stripped = query.strip().rstrip(";")
-        if stripped.upper().startswith("INSERT INTO ") and " RETURNING " not in stripped.upper():
-            query = stripped + " RETURNING id"
-
-        self._cursor.execute(query, params)
-        self._lastrowid = None
-        if stripped.upper().startswith("INSERT INTO "):
-            row = self._cursor.fetchone()
-            if row is not None:
-                self._lastrowid = row[0]
-        return self
-
-    @property
-    def lastrowid(self):
-        return self._lastrowid
-
-    def fetchone(self):
-        row = self._cursor.fetchone()
-        if row is None:
-            return None
-        cols = [d.name for d in self._cursor.description]
-        return CompatRow(zip(cols, row))
-
-    def fetchall(self):
-        rows = self._cursor.fetchall()
-        if not rows:
-            return []
-        cols = [d.name for d in self._cursor.description]
-        return [CompatRow(zip(cols, row)) for row in rows]
-
-    def close(self):
-        self._cursor.close()
-
-class CompatConnection:
-    def __init__(self, conn):
-        self._conn = conn
-
-    def cursor(self):
-        return CompatCursor(self._conn.cursor())
-
-    def commit(self):
-        self._conn.commit()
-
-    def rollback(self):
-        self._conn.rollback()
-
-    def close(self):
-        self._conn.close()
+DB_FILE = os.path.join(os.path.dirname(__file__), 'database.db')
 
 def get_db():
-    if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL chưa được cấu hình.")
-    return CompatConnection(psycopg.connect(DATABASE_URL, connect_timeout=10))
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def init_db():
-    # Supabase already contains the schema. Do not create/drop tables at app startup.
-    return None
+    conn = get_db()
+    cursor = conn.cursor()
+
+    # 0. Migration checks / drops
+    cursor.execute("PRAGMA table_info(bonus_penalty_logs);")
+    cols = [row['name'] for row in cursor.fetchall()]
+    if cols and 'week_number' not in cols:
+        cursor.execute("DROP TABLE IF EXISTS final_grades;")
+        cursor.execute("DROP TABLE IF EXISTS bonus_penalty_logs;")
+        cursor.execute("DROP TABLE IF EXISTS regular_scores;")
+        cursor.execute("DROP TABLE IF EXISTS score_types;")
+    else:
+        cursor.execute("PRAGMA table_info(final_grades);")
+        f_cols = [row['name'] for row in cursor.fetchall()]
+        if f_cols and 'kttx_period' not in f_cols:
+            cursor.execute("DROP TABLE IF EXISTS final_grades;")
+
+    # 1. Classes Table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS classes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        grade_level INTEGER NOT NULL,
+        academic_year TEXT NOT NULL
+    );
+    """)
+
+    # 2. Groups Table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS groups (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        class_id INTEGER NOT NULL,
+        group_number INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        FOREIGN KEY (class_id) REFERENCES classes (id) ON DELETE CASCADE
+    );
+    """)
+
+    # 3. Students Table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS students (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_code TEXT UNIQUE NOT NULL,
+        full_name TEXT NOT NULL,
+        class_id INTEGER NOT NULL,
+        group_id INTEGER NOT NULL,
+        is_group_leader INTEGER DEFAULT 0,
+        avatar_gender TEXT DEFAULT 'male',
+        FOREIGN KEY (class_id) REFERENCES classes (id) ON DELETE CASCADE,
+        FOREIGN KEY (group_id) REFERENCES groups (id) ON DELETE CASCADE
+    );
+    """)
+
+    # 4. Score Types Table (KTTX)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS score_types (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        category TEXT NOT NULL,
+        weight REAL DEFAULT 1.0
+    );
+    """)
+
+    # 5. Regular Scores Table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS regular_scores (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL,
+        score_type_id INTEGER NOT NULL,
+        score REAL NOT NULL,
+        date_logged TEXT NOT NULL,
+        note TEXT,
+        FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+        FOREIGN KEY (score_type_id) REFERENCES score_types (id) ON DELETE CASCADE
+    );
+    """)
+
+    # 6. Bonus Penalty Logs Table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS bonus_penalty_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL,
+        group_id INTEGER NOT NULL,
+        type TEXT CHECK(type IN ('BONUS', 'PENALTY')) NOT NULL,
+        points REAL NOT NULL,
+        reason TEXT NOT NULL,
+        category_type TEXT NOT NULL,
+        declared_by_student_id INTEGER NOT NULL,
+        status TEXT CHECK(status IN ('PENDING', 'APPROVED', 'REJECTED')) DEFAULT 'PENDING',
+        week_number INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        reviewed_at TEXT,
+        teacher_note TEXT,
+        FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+        FOREIGN KEY (group_id) REFERENCES groups (id) ON DELETE CASCADE,
+        FOREIGN KEY (declared_by_student_id) REFERENCES students (id) ON DELETE CASCADE
+    );
+    """)
+
+    # 7. Final Grades Table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS final_grades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL,
+        kttx_period INTEGER NOT NULL DEFAULT 1,
+        avg_kttx REAL DEFAULT 0.0,
+        total_bonus_penalty REAL DEFAULT 0.0,
+        final_score REAL DEFAULT 0.0,
+        academic_rank TEXT DEFAULT 'Chưa xếp loại',
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE,
+        UNIQUE(student_id, kttx_period)
+    );
+    """)
+
+    # 8. Teacher Comments
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS teacher_comments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        student_id INTEGER NOT NULL,
+        week_num INTEGER NOT NULL,
+        comment TEXT NOT NULL,
+        badge TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (student_id) REFERENCES students (id) ON DELETE CASCADE
+    );
+    """)
+
+    conn.commit()
+
+    # Check if seed data exists
+    cursor.execute("SELECT COUNT(*) FROM classes;")
+    if cursor.fetchone()[0] == 0:
+        seed_data(conn)
+
+    conn.close()
 
 def seed_data(conn):
     cursor = conn.cursor()
@@ -870,7 +930,7 @@ def add_student():
         conn.close()
 
         return jsonify({'message': f'Thêm học sinh {full_name} ({student_code}) thành công!', 'id': student_id}), 201
-    except IntegrityError:
+    except sqlite3.IntegrityError:
         conn.close()
         return jsonify({'error': f'Mã học sinh "{student_code}" đã tồn tại trên hệ thống.'}), 400
 
@@ -895,9 +955,15 @@ def bulk_import_students():
         gender = item.get('avatar_gender', 'male').strip().lower()
         is_leader = 1 if item.get('is_group_leader') else 0
 
-        if not full_name or not student_code:
-            errors.append(f"Dòng {idx+1}: Tên và Mã học sinh không được để trống")
+        if not full_name:
+            errors.append(f"Dòng {idx+1}: Họ và tên học sinh không được để trống")
             continue
+
+        if not student_code:
+            import random
+            import string
+            random_suffix = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+            student_code = f"HS_{random_suffix}"
 
         if not class_name:
             class_name = "Lớp 8A"
@@ -942,7 +1008,7 @@ def bulk_import_students():
                 """, (student_id, st_id, now_str))
 
             success_count += 1
-        except IntegrityError:
+        except sqlite3.IntegrityError:
             errors.append(f"Dòng {idx+1}: Mã học sinh '{student_code}' đã tồn tại")
             continue
 
@@ -1016,7 +1082,7 @@ def edit_student(student_id):
         conn.close()
 
         return jsonify({'message': f'Cập nhật hồ sơ học sinh {full_name} thành công!'}), 200
-    except IntegrityError:
+    except sqlite3.IntegrityError:
         conn.close()
         return jsonify({'error': f'Mã học sinh "{student_code}" đã tồn tại trên hệ thống.'}), 400
 
@@ -1132,7 +1198,8 @@ def serve_static(path):
     return send_from_directory('static', path)
 
 if __name__ == '__main__':
-    print("Connecting to Supabase PostgreSQL...")
+    print("Initializing SQLite Database...")
+    init_db()
     print("Starting KHTN Server on http://127.0.0.1:5000 ...")
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
+    app.run(host='127.0.0.1', port=5000, debug=True)
 
