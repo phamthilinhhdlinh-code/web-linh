@@ -78,7 +78,7 @@ def get_db():
     if DATABASE_URL:
         import psycopg
         from psycopg.rows import dict_row
-        conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+        conn = psycopg.connect(DATABASE_URL, sslmode='require', row_factory=dict_row)
         return PostgresConnectionProxy(conn)
     else:
         conn = sqlite3.connect(DB_FILE)
