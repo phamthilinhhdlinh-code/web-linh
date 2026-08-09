@@ -81,6 +81,7 @@ def get_db():
     if DATABASE_URL:
         import psycopg
         from psycopg.rows import dict_row
+        from psycopg.conninfo import make_conninfo
         import urllib.parse
         import socket
 
@@ -88,21 +89,10 @@ def get_db():
         resolved_url = DATABASE_URL
         try:
             parsed = urllib.parse.urlparse(DATABASE_URL)
-            netloc = parsed.netloc
-            auth = ""
-            host_port = netloc
-            if "@" in netloc:
-                auth, host_port = netloc.split("@", 1)
-                auth = auth + "@"
-            host = host_port
-            port = ""
-            if ":" in host_port:
-                host, port = host_port.split(":", 1)
-                port = ":" + port
-            
-            ipv4 = socket.gethostbyname(host)
-            new_netloc = f"{auth}{ipv4}{port}"
-            resolved_url = urllib.parse.urlunparse(parsed._replace(netloc=new_netloc))
+            host = parsed.hostname
+            if host:
+                ipv4 = socket.gethostbyname(host)
+                resolved_url = make_conninfo(DATABASE_URL, host=ipv4)
         except Exception as e:
             import traceback
             db_error_trace = f"Resolution error: {str(e)}\n{traceback.format_exc()}"
