@@ -584,7 +584,7 @@ def get_students():
         query += " WHERE s.group_id = ?"
         params.append(group_id)
 
-    query += " ORDER BY s.group_id ASC, s.is_group_leader DESC, s.student_code ASC;"
+    query += " ORDER BY s.group_id ASC, s.is_group_leader DESC, CAST(s.student_code AS INTEGER) ASC;"
 
     cursor.execute(query, params)
     students = [dict(row) for row in cursor.fetchall()]
@@ -1181,7 +1181,7 @@ def export_summary():
         query += " WHERE s.class_id = ?"
         params.append(class_id)
         
-    query += " ORDER BY c.name, g.group_number, s.student_code;"
+    query += " ORDER BY c.name, g.group_number, CAST(s.student_code AS INTEGER);"
 
     cursor.execute(query, params)
     rows = [dict(r) for r in cursor.fetchall()]
