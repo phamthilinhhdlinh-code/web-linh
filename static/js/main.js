@@ -1577,13 +1577,23 @@ function onScoreClassFilterChange() {
 // --- EXCEL BULK IMPORT HANDLERS ---
 let pendingImportStudents = [];
 
+function normalizeHeader(str) {
+  if (!str) return '';
+  return str.toString()
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // Remove Vietnamese accents
+    .replace(/\s+/g, "_") // Replace spaces with underscores
+    .replace(/[^a-z0-9_]/g, ""); // Keep only alphanumeric and underscores
+}
+
 function downloadExcelTemplate() {
   const wb = XLSX.utils.book_new();
-  const headers = ["Mã HS", "Họ và Tên", "Lớp", "Nhóm", "Giới Tính", "Nhóm Trưởng"];
+  const headers = ["Họ và Tên", "Lớp", "Nhóm", "Giới Tính", "Nhóm Trưởng"];
   
   const sampleData = [
     {
-      "Mã HS": 1,
       "Họ và Tên": "Nguyễn Văn A",
       "Lớp": "8A",
       "Nhóm": "Nhóm 1",
@@ -1591,7 +1601,6 @@ function downloadExcelTemplate() {
       "Nhóm Trưởng": "Không"
     },
     {
-      "Mã HS": 2,
       "Họ và Tên": "Trần Thị B",
       "Lớp": "8A",
       "Nhóm": "Nhóm 2",
@@ -1599,7 +1608,6 @@ function downloadExcelTemplate() {
       "Nhóm Trưởng": "Có"
     },
     {
-      "Mã HS": 3,
       "Họ và Tên": "Lê Văn C",
       "Lớp": "8A",
       "Nhóm": "Nhóm 1",
@@ -1643,81 +1651,98 @@ async function handleExcelUpload(event) {
         return;
       }
 
+      // Detect and map headers
+      const rawRow = json[0];
+      const headerKeys = Object.keys(rawRow);
+      
+      let nameKey = '';
+      let classKey = '';
+      let groupKey = '';
+      let genderKey = '';
+      let leaderKey = '';
+
+      headerKeys.forEach(k => {
+        const norm = normalizeHeader(k);
+        if (norm === 'ho_va_ten' || norm === 'ho_ten' || norm === 'ten' || norm === 'fullname' || norm === 'full_name') {
+          nameKey = k;
+        } else if (norm === 'lop' || norm === 'class' || norm === 'class_name') {
+          classKey = k;
+        } else if (norm === 'nhom' || norm === 'nhom_khtn' || norm === 'to' || norm === 'group' || norm === 'group_name') {
+          groupKey = k;
+        } else if (norm === 'gioi_tinh' || norm === 'gender' || norm === 'gioi') {
+          genderKey = k;
+        } else if (norm === 'nhom_truong' || norm === 'leader' || norm === 'truong_nhom' || norm === 'is_leader') {
+          leaderKey = k;
+        }
+      });
+
+      if (!nameKey || !classKey || !groupKey) {
+        showToast("Không tìm thấy các cột bắt buộc: Họ và Tên, Lớp, Nhóm!", "error");
+        return;
+      }
+
       const errors = [];
       const validStudents = [];
       const seenExcelStudents = new Set();
-      const seenExcelCodes = new Set();
+
+      // Find current max student_code as integer to assign new ones sequentially
+      const existingInts = studentsData
+        .map(s => parseInt(s.student_code))
+        .filter(num => !isNaN(num));
+      const maxCode = existingInts.length > 0 ? Math.max(...existingInts) : 0;
 
       json.forEach((row, idx) => {
         const rowNum = idx + 2;
 
-        const fullName = String(row['Họ và Tên'] || row['Họ Tên'] || row['Tên'] || row['full_name'] || row['ho_ten'] || '').trim();
-        const className = String(row['Lớp'] || row['class_name'] || row['lop'] || '').trim();
-        const groupName = String(row['Nhóm'] || row['Tổ'] || row['group_name'] || row['nhom'] || '').trim();
-        let gender = String(row['Giới Tính'] || row['Giới tính'] || row['gender'] || row['gioi_tinh'] || 'Nam').trim();
-        let isLeader = row['Nhóm Trưởng'] || row['Leader'] || row['nhom_truong'] || false;
-        let studentCode = String(row['Mã HS'] || row['Mã Số'] || row['Mã học sinh'] || row['student_code'] || row['ma_hs'] || '').trim();
+        const fullName = String(row[nameKey] || '').trim();
+        const className = String(row[classKey] || '').trim();
+        const groupName = String(row[groupKey] || '').trim();
+        
+        let gender = genderKey ? String(row[genderKey] || 'Nam').trim() : 'Nam';
+        let isLeader = leaderKey ? (row[leaderKey] || false) : false;
 
-        // 1. Kiểm tra Mã HS bắt buộc, là số nguyên dương, không nhận HS001
-        if (!studentCode) {
-          errors.push(`Dòng ${rowNum}: Mã HS không được để trống.`);
-        } else if (studentCode.toUpperCase().startsWith("HS")) {
-          errors.push(`Dòng ${rowNum}: Không chấp nhận mã dạng chữ "${studentCode}". Vui lòng nhập số nguyên dương (1, 2, 3...).`);
-        } else if (!/^\d+$/.test(studentCode) || parseInt(studentCode) <= 0) {
-          errors.push(`Dòng ${rowNum}: Mã HS phải là số nguyên dương (1, 2, 3...). Giá trị hiện tại: "${studentCode}".`);
-        }
+        // Auto-generate Mã HS (STT) based on row index and maxCode
+        const studentCode = String(maxCode + idx + 1);
 
-        // 2. Họ và tên không được để trống
+        // 1. Họ và tên không được để trống
         if (!fullName) {
           errors.push(`Dòng ${rowNum}: Họ và tên không được để trống.`);
         }
 
-        // 3. Lớp không được để trống
+        // 2. Lớp không được để trống
         if (!className) {
           errors.push(`Dòng ${rowNum}: Lớp không được để trống.`);
         }
 
-        // 4. Nhóm KHTN phải là số nhóm hợp lệ (1-8)
+        // 3. Nhóm KHTN phải là số nhóm hợp lệ (1-8)
         let groupNum = null;
         const match = groupName.match(/\d+/);
         if (match) {
           groupNum = parseInt(match[0]);
         }
-        if (groupNum === null || groupNum < 1 || groupNum > 8) {
+        if (!groupName) {
+          errors.push(`Dòng ${rowNum}: Nhóm không được để trống.`);
+        } else if (groupNum === null || groupNum < 1 || groupNum > 8) {
           errors.push(`Dòng ${rowNum}: Nhóm KHTN không hợp lệ (Phải từ 1 đến 8, ví dụ: Nhóm 1, Nhóm 2...).`);
         }
 
         if (fullName && className) {
           const comboKey = `${fullName.toLowerCase()}||${className.toLowerCase()}`;
 
-          // 5. Không cho nhập trùng học sinh trong file Excel
+          // 4. Không cho nhập trùng học sinh trong file Excel
           if (seenExcelStudents.has(comboKey)) {
             errors.push(`Dòng ${rowNum}: Học sinh "${fullName}" lớp "${className}" bị trùng lặp trong file Excel.`);
           } else {
             seenExcelStudents.add(comboKey);
           }
 
-          // 6. Không cho nhập trùng học sinh đã tồn tại trong DB
+          // 5. Không cho nhập trùng học sinh đã tồn tại trong DB
           const isDbDuplicate = studentsData.some(s => 
             s.full_name.toLowerCase().trim() === fullName.toLowerCase() && 
             s.class_name.toLowerCase().trim() === className.toLowerCase()
           );
           if (isDbDuplicate) {
             errors.push(`Dòng ${rowNum}: Học sinh "${fullName}" lớp "${className}" đã tồn tại trên hệ thống.`);
-          }
-        }
-
-        // 7. Kiểm tra trùng lặp Mã HS
-        if (studentCode && /^\d+$/.test(studentCode) && parseInt(studentCode) > 0) {
-          if (seenExcelCodes.has(studentCode)) {
-            errors.push(`Dòng ${rowNum}: Mã HS "${studentCode}" bị trùng lặp trong file Excel.`);
-          } else {
-            seenExcelCodes.add(studentCode);
-          }
-
-          const isCodeDup = studentsData.some(s => s.student_code === studentCode);
-          if (isCodeDup) {
-            errors.push(`Dòng ${rowNum}: Mã HS "${studentCode}" đã tồn tại trên hệ thống.`);
           }
         }
 
@@ -1729,8 +1754,8 @@ async function handleExcelUpload(event) {
           isLeader = isLeader === 1;
         }
 
-        if (fullName && className && groupNum !== null && groupNum >= 1 && groupNum <= 8 && studentCode && /^\d+$/.test(studentCode) && !seenExcelCodes.has(studentCode) && !seenExcelStudents.has(`${fullName.toLowerCase()}||${className.toLowerCase()}`)) {
-          // Check if we already pushed errors for this code or student name to prevent adding it as valid
+        const comboKey = `${fullName.toLowerCase()}||${className.toLowerCase()}`;
+        if (fullName && className && groupNum !== null && groupNum >= 1 && groupNum <= 8 && !seenExcelStudents.has(comboKey)) {
           const hasError = errors.some(err => err.startsWith(`Dòng ${rowNum}:`));
           if (!hasError) {
             validStudents.push({
