@@ -1754,8 +1754,7 @@ async function handleExcelUpload(event) {
           isLeader = isLeader === 1;
         }
 
-        const comboKey = `${fullName.toLowerCase()}||${className.toLowerCase()}`;
-        if (fullName && className && groupNum !== null && groupNum >= 1 && groupNum <= 8 && !seenExcelStudents.has(comboKey)) {
+        if (fullName && className && groupNum !== null && groupNum >= 1 && groupNum <= 8) {
           const hasError = errors.some(err => err.startsWith(`Dòng ${rowNum}:`));
           if (!hasError) {
             validStudents.push({
