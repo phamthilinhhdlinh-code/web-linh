@@ -267,10 +267,7 @@ async function updateRoleUI() {
 
 function getStudentSTT(s) {
   if (!s) return '';
-  const classStudents = studentsData.filter(st => st.class_id === s.class_id);
-  classStudents.sort((a, b) => (a.student_code || '').localeCompare(b.student_code || ''));
-  const idx = classStudents.findIndex(st => st.id === s.id);
-  return idx !== -1 ? (idx + 1) : 1;
+  return s.student_code || '';
 }
 
 // Populate Student Select Dropdown in Declaration Form
@@ -442,10 +439,10 @@ function renderScoresTable() {
     const isDisabled = (currentRole === 'TEACHER') ? '' : 'disabled';
 
     tr.innerHTML = `
-      <td class="p-3 text-center text-slate-400 font-bold font-mono text-xs">${index + 1}</td>
+      <td class="p-3 text-center text-slate-400 font-bold font-mono text-xs">${s.student_code}</td>
       <td class="p-3 font-semibold text-white">
         ${s.is_group_leader ? '<span class="text-amber-400" title="Nhóm trưởng">👑</span>' : ''}
-        ${s.full_name} <span class="text-xs font-mono text-indigo-300 ml-1">(${s.student_code})</span>
+        ${s.full_name}
       </td>
       <td class="p-3 text-slate-300 font-medium">${s.class_name || 'Lớp'}</td>
       <td class="p-3 text-cyan-300 text-xs">Nhóm ${s.group_number}</td>
@@ -797,11 +794,11 @@ function renderClassesTable(list = null) {
     tr.className = "hover:bg-white/5 transition";
 
     tr.innerHTML = `
-      <td class="p-3 text-center text-slate-400 font-bold font-mono">${index + 1}</td>
+      <td class="p-3 text-center text-slate-400 font-bold font-mono">${s.student_code}</td>
       <td class="p-3 font-semibold text-white">
         <div class="flex items-center gap-2">
           <span>${s.avatar_gender === 'female' ? '👩‍🎓' : '👨‍🎓'}</span>
-          <span>${s.full_name} <span class="text-xs font-mono text-indigo-300 ml-1">(${s.student_code})</span></span>
+          <span>${s.full_name}</span>
         </div>
       </td>
       <td class="p-3 text-slate-300 font-medium">${s.class_name || 'Lớp'}</td>
@@ -1582,24 +1579,32 @@ let pendingImportStudents = [];
 
 function downloadExcelTemplate() {
   const wb = XLSX.utils.book_new();
-  const headers = ["Họ và Tên", "Lớp", "Nhóm", "Giới Tính", "Nhóm Trưởng", "Mã HS"];
+  const headers = ["Mã HS", "Họ và Tên", "Lớp", "Nhóm", "Giới Tính", "Nhóm Trưởng"];
   
   const sampleData = [
     {
-      "Họ và Tên": "Nguyễn Văn An",
-      "Lớp": "Lớp 8A",
+      "Mã HS": 1,
+      "Họ và Tên": "Nguyễn Văn A",
+      "Lớp": "8A",
       "Nhóm": "Nhóm 1",
       "Giới Tính": "Nam",
-      "Nhóm Trưởng": "Không",
-      "Mã HS": "HS001"
+      "Nhóm Trưởng": "Không"
     },
     {
-      "Họ và Tên": "Trần Thị Bình",
-      "Lớp": "Lớp 8A",
+      "Mã HS": 2,
+      "Họ và Tên": "Trần Thị B",
+      "Lớp": "8A",
       "Nhóm": "Nhóm 2",
       "Giới Tính": "Nữ",
-      "Nhóm Trưởng": "Có",
-      "Mã HS": "HS002"
+      "Nhóm Trưởng": "Có"
+    },
+    {
+      "Mã HS": 3,
+      "Họ và Tên": "Lê Văn C",
+      "Lớp": "8A",
+      "Nhóm": "Nhóm 1",
+      "Giới Tính": "Nam",
+      "Nhóm Trưởng": "Không"
     }
   ];
   
@@ -1641,6 +1646,7 @@ async function handleExcelUpload(event) {
       const errors = [];
       const validStudents = [];
       const seenExcelStudents = new Set();
+      const seenExcelCodes = new Set();
 
       json.forEach((row, idx) => {
         const rowNum = idx + 2;
@@ -1652,17 +1658,26 @@ async function handleExcelUpload(event) {
         let isLeader = row['Nhóm Trưởng'] || row['Leader'] || row['nhom_truong'] || false;
         let studentCode = String(row['Mã HS'] || row['Mã Số'] || row['Mã học sinh'] || row['student_code'] || row['ma_hs'] || '').trim();
 
-        // 1. Họ và tên không được để trống
+        // 1. Kiểm tra Mã HS bắt buộc, là số nguyên dương, không nhận HS001
+        if (!studentCode) {
+          errors.push(`Dòng ${rowNum}: Mã HS không được để trống.`);
+        } else if (studentCode.toUpperCase().startsWith("HS")) {
+          errors.push(`Dòng ${rowNum}: Không chấp nhận mã dạng chữ "${studentCode}". Vui lòng nhập số nguyên dương (1, 2, 3...).`);
+        } else if (!/^\d+$/.test(studentCode) || parseInt(studentCode) <= 0) {
+          errors.push(`Dòng ${rowNum}: Mã HS phải là số nguyên dương (1, 2, 3...). Giá trị hiện tại: "${studentCode}".`);
+        }
+
+        // 2. Họ và tên không được để trống
         if (!fullName) {
           errors.push(`Dòng ${rowNum}: Họ và tên không được để trống.`);
         }
 
-        // 2. Lớp không được để trống
+        // 3. Lớp không được để trống
         if (!className) {
           errors.push(`Dòng ${rowNum}: Lớp không được để trống.`);
         }
 
-        // 3. Nhóm KHTN phải là số nhóm hợp lệ (1-8)
+        // 4. Nhóm KHTN phải là số nhóm hợp lệ (1-8)
         let groupNum = null;
         const match = groupName.match(/\d+/);
         if (match) {
@@ -1675,20 +1690,34 @@ async function handleExcelUpload(event) {
         if (fullName && className) {
           const comboKey = `${fullName.toLowerCase()}||${className.toLowerCase()}`;
 
-          // 4. Không cho nhập trùng học sinh trong file Excel
+          // 5. Không cho nhập trùng học sinh trong file Excel
           if (seenExcelStudents.has(comboKey)) {
             errors.push(`Dòng ${rowNum}: Học sinh "${fullName}" lớp "${className}" bị trùng lặp trong file Excel.`);
           } else {
             seenExcelStudents.add(comboKey);
           }
 
-          // 5. Không cho nhập trùng học sinh đã tồn tại trong DB
+          // 6. Không cho nhập trùng học sinh đã tồn tại trong DB
           const isDbDuplicate = studentsData.some(s => 
             s.full_name.toLowerCase().trim() === fullName.toLowerCase() && 
             s.class_name.toLowerCase().trim() === className.toLowerCase()
           );
           if (isDbDuplicate) {
             errors.push(`Dòng ${rowNum}: Học sinh "${fullName}" lớp "${className}" đã tồn tại trên hệ thống.`);
+          }
+        }
+
+        // 7. Kiểm tra trùng lặp Mã HS
+        if (studentCode && /^\d+$/.test(studentCode) && parseInt(studentCode) > 0) {
+          if (seenExcelCodes.has(studentCode)) {
+            errors.push(`Dòng ${rowNum}: Mã HS "${studentCode}" bị trùng lặp trong file Excel.`);
+          } else {
+            seenExcelCodes.add(studentCode);
+          }
+
+          const isCodeDup = studentsData.some(s => s.student_code === studentCode);
+          if (isCodeDup) {
+            errors.push(`Dòng ${rowNum}: Mã HS "${studentCode}" đã tồn tại trên hệ thống.`);
           }
         }
 
@@ -1700,15 +1729,19 @@ async function handleExcelUpload(event) {
           isLeader = isLeader === 1;
         }
 
-        if (fullName && className && groupNum !== null && groupNum >= 1 && groupNum <= 8) {
-          validStudents.push({
-            student_code: studentCode,
-            full_name: fullName,
-            class_name: className,
-            group_name: `Nhóm ${groupNum}`,
-            avatar_gender: gender,
-            is_group_leader: isLeader
-          });
+        if (fullName && className && groupNum !== null && groupNum >= 1 && groupNum <= 8 && studentCode && /^\d+$/.test(studentCode) && !seenExcelCodes.has(studentCode) && !seenExcelStudents.has(`${fullName.toLowerCase()}||${className.toLowerCase()}`)) {
+          // Check if we already pushed errors for this code or student name to prevent adding it as valid
+          const hasError = errors.some(err => err.startsWith(`Dòng ${rowNum}:`));
+          if (!hasError) {
+            validStudents.push({
+              student_code: studentCode,
+              full_name: fullName,
+              class_name: className,
+              group_name: `Nhóm ${groupNum}`,
+              avatar_gender: gender,
+              is_group_leader: isLeader
+            });
+          }
         }
       });
 
@@ -1746,6 +1779,7 @@ async function handleExcelUpload(event) {
       validStudents.forEach(s => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
+          <td class="p-2.5 text-center text-slate-400 font-bold font-mono">${s.student_code}</td>
           <td class="p-2.5 font-semibold text-white">${s.full_name}</td>
           <td class="p-2.5 text-slate-300">${s.class_name}</td>
           <td class="p-2.5 text-center text-slate-300">${s.group_name}</td>
