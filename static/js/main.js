@@ -63,6 +63,31 @@ document.addEventListener('DOMContentLoaded', async () => {
   fetchSystemMetrics();
 });
 
+// Helper to perform API requests with error handling
+async function requestApi(url, options = {}) {
+  try {
+    const res = await fetch(url, options);
+    const text = await res.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      if (!res.ok) {
+        throw new Error(`Server Error (${res.status}): ${text.substring(0, 120)}`);
+      }
+      throw new Error(`Invalid JSON response: ${text.substring(0, 50)}`);
+    }
+
+    if (!res.ok) {
+      throw new Error(data.error || data.message || `API Error (${res.status})`);
+    }
+    return data;
+  } catch (err) {
+    console.error(`API Request failed for ${url}:`, err);
+    throw err;
+  }
+}
+
 // Load All Data from Flask Backend API
 async function loadInitialData() {
   try {
@@ -84,7 +109,7 @@ async function loadInitialData() {
     updateRoleUI();
   } catch (err) {
     console.error("Error loading data from server:", err);
-    showToast("Không thể kết nối Backend Server Flask!", "error");
+    showToast(`Không thể kết nối Backend Server: ${err.message}`, "error");
   }
 }
 
@@ -119,8 +144,7 @@ function showToast(message, type = 'info') {
 
 // Fetch Overview Stats
 async function fetchOverview() {
-  const res = await fetch(`/api/overview?period=${selectedKttxPeriod}`);
-  overviewData = await res.json();
+  overviewData = await requestApi(`/api/overview?period=${selectedKttxPeriod}`);
 
   document.getElementById('stat-total-students').innerText = overviewData.total_students || 16;
   document.getElementById('stat-pending-bp').innerText = overviewData.pending_declarations || 0;
@@ -137,14 +161,12 @@ async function fetchOverview() {
 
 // Fetch Groups List
 async function fetchGroups() {
-  const res = await fetch('/api/groups');
-  groupsData = await res.json();
+  groupsData = await requestApi('/api/groups');
 }
 
 // Fetch All Students
 async function fetchStudents() {
-  const res = await fetch(`/api/students?period=${selectedKttxPeriod}`);
-  studentsData = await res.json();
+  studentsData = await requestApi(`/api/students?period=${selectedKttxPeriod}`);
 
   renderScoresTable();
   applyFilters();
@@ -155,8 +177,7 @@ async function fetchStudents() {
 
 // Fetch Pending Logs for Teacher Review
 async function fetchPendingLogs() {
-  const res = await fetch('/api/bonus-penalty?status=PENDING');
-  pendingLogsData = await res.json();
+  pendingLogsData = await requestApi('/api/bonus-penalty?status=PENDING');
   renderTeacherPendingTable();
 }
 
