@@ -1898,16 +1898,16 @@ function downloadExcelScoreTemplate() {
     filtered = studentsData.filter(s => s.class_id === classId);
   }
 
-  // Sort students by class name, then student_code (STT) numerical order
+  // Sort students by class name, then naturally by student_code
   filtered = [...filtered].sort((a, b) => {
     const classA = a.class_name || '';
     const classB = b.class_name || '';
     if (classA !== classB) return classA.localeCompare(classB);
-    return parseInt(a.student_code || 0) - parseInt(b.student_code || 0);
+    return (a.student_code || '').localeCompare(b.student_code || '', undefined, {numeric: true, sensitivity: 'base'});
   });
 
-  const data = filtered.map(s => ({
-    "STT": parseInt(s.student_code) || s.student_code,
+  const data = filtered.map((s, index) => ({
+    "STT": index + 1,
     "HỌ VÀ TÊN": s.full_name,
     "LỚP": s.class_name || '',
     "ĐIỂM KTTX": ""
@@ -1944,6 +1944,23 @@ async function handleExcelScoreUpload(event) {
         showToast("File Excel rỗng hoặc không đúng định dạng!", "error");
         return;
       }
+
+      // Get the currently displayed students filtered by class
+      const classSelect = document.getElementById('score-class-select');
+      const classVal = classSelect ? classSelect.value : 'ALL';
+      let displayedStudents = studentsData || [];
+      if (classVal !== 'ALL') {
+        const classId = parseInt(classVal);
+        displayedStudents = studentsData.filter(s => s.class_id === classId);
+      }
+
+      // Sort in the exact same order as the template
+      displayedStudents = [...displayedStudents].sort((a, b) => {
+        const classA = a.class_name || '';
+        const classB = b.class_name || '';
+        if (classA !== classB) return classA.localeCompare(classB);
+        return (a.student_code || '').localeCompare(b.student_code || '', undefined, {numeric: true, sensitivity: 'base'});
+      });
 
       const errors = [];
       const validUpdates = [];
@@ -2013,22 +2030,16 @@ async function handleExcelScoreUpload(event) {
           return;
         }
 
-        // 3. Match student by STT (student_code)
-        const matchedStudent = studentsData.find(s => {
-          const sCodeStr = String(s.student_code || '').trim();
-          const rawSttStr = String(rawStt).trim();
-          if (sCodeStr === rawSttStr) return true;
-          // Support numerical comparison if both are integers
-          const sCodeInt = parseInt(sCodeStr);
-          const rawSttInt = parseInt(rawSttStr);
-          if (!isNaN(sCodeInt) && !isNaN(rawSttInt) && sCodeInt === rawSttInt) return true;
-          return false;
-        });
+        // 3. Match student by STT (index + 1 in displayedStudents)
+        const sttInt = parseInt(rawStt);
+        const studentIndex = sttInt - 1;
 
-        if (!matchedStudent) {
+        if (isNaN(sttInt) || studentIndex < 0 || studentIndex >= displayedStudents.length) {
           errors.push(`Dòng ${rowNum}: STT '${rawStt}' không tồn tại trong hệ thống.`);
           return;
         }
+
+        const matchedStudent = displayedStudents[studentIndex];
 
         // 4. Match student by Name and Class name to avoid mix-ups
         const dbNameNorm = matchedStudent.full_name.toLowerCase().replace(/\s+/g, ' ').trim();
