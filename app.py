@@ -577,11 +577,25 @@ def recalculate_all_final_grades(conn=None):
         4: (13, 15)
     }
 
+    # Map period index (1, 2, 3, 4) to actual score_type_id from database
+    cursor.execute("SELECT id, category FROM score_types;")
+    st_rows = cursor.fetchall()
+    st_map = {}
+    for r in st_rows:
+        cat = db_row_value(r, 'category', 1)
+        st_id = db_row_value(r, 'id', 0)
+        if cat and cat.startswith('KTTX'):
+            try:
+                period_num = int(cat[4:])
+                st_map[period_num] = st_id
+            except ValueError:
+                pass
+
     for s in students:
         s_id = s['id']
         
         for period in [1, 2, 3, 4]:
-            score_type_id = period
+            score_type_id = st_map.get(period, period)
 
             # 1. Calc Avg KTTX
             cursor.execute("SELECT score FROM regular_scores WHERE student_id = ? AND score_type_id = ? LIMIT 1;", (s_id, score_type_id))
@@ -1067,9 +1081,24 @@ def update_scores():
 
     now_str = datetime.now().strftime("%Y-%m-%d")
 
+    # Map period index (1, 2, 3, 4) to actual score_type_id from database
+    cursor.execute("SELECT id, category FROM score_types;")
+    st_rows = cursor.fetchall()
+    st_map = {}
+    for r in st_rows:
+        cat = db_row_value(r, 'category', 1)
+        st_id = db_row_value(r, 'id', 0)
+        if cat and cat.startswith('KTTX'):
+            try:
+                period_num = int(cat[4:])
+                st_map[period_num] = st_id
+            except ValueError:
+                pass
+
     for item in data:
         s_id = item['student_id']
-        st_id = item['score_type_id']
+        frontend_st_id = item['score_type_id']
+        st_id = st_map.get(frontend_st_id, frontend_st_id)
         val = float(item['score'])
 
         # Check if score entry exists
