@@ -1886,6 +1886,42 @@ async function confirmExcelImport() {
   }
 }
 
+// Download regular score Excel template containing current database student list
+function downloadExcelScoreTemplate() {
+  const classSelect = document.getElementById('score-class-select');
+  const classVal = classSelect ? classSelect.value : 'ALL';
+  const className = classSelect && classVal !== 'ALL' ? classSelect.options[classSelect.selectedIndex].text : 'Tất_cả';
+
+  let filtered = studentsData || [];
+  if (classVal !== 'ALL') {
+    const classId = parseInt(classVal);
+    filtered = studentsData.filter(s => s.class_id === classId);
+  }
+
+  // Sort students by class name, then student_code (STT) numerical order
+  filtered = [...filtered].sort((a, b) => {
+    const classA = a.class_name || '';
+    const classB = b.class_name || '';
+    if (classA !== classB) return classA.localeCompare(classB);
+    return parseInt(a.student_code || 0) - parseInt(b.student_code || 0);
+  });
+
+  const data = filtered.map(s => ({
+    "STT": parseInt(s.student_code) || s.student_code,
+    "HỌ VÀ TÊN": s.full_name,
+    "LỚP": s.class_name || '',
+    "ĐIỂM KTTX": ""
+  }));
+
+  const worksheet = XLSX.utils.json_to_sheet(data);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Mau_KTTX");
+
+  const filename = `Mau_Diem_KTTX_${className.replace(/\s+/g, '_')}_KyKttx${selectedKttxPeriod}.xlsx`;
+  XLSX.writeFile(workbook, filename);
+  showToast(`Đã tạo và tải file mẫu: ${filename}`, "success");
+}
+
 function triggerExcelScoreInput() {
   const input = document.getElementById('excel-score-input');
   if (input) input.click();
@@ -1909,67 +1945,138 @@ async function handleExcelScoreUpload(event) {
         return;
       }
 
-      let successCount = 0;
-      let matchedCount = 0;
+      const errors = [];
+      const validUpdates = [];
 
-      json.forEach(row => {
-        // Find score column
-        const scoreKey = Object.keys(row).find(key => 
-          key.toLowerCase().includes('điểm') || 
-          key.toLowerCase().includes('diem') || 
-          key.toLowerCase().includes('score') || 
-          key.toLowerCase().includes('kttx')
-        );
-        
-        if (scoreKey === undefined) return;
-        const rawScore = row[scoreKey];
-        if (rawScore === undefined || rawScore === null || rawScore === '') return;
-        const score = parseFloat(rawScore);
-        if (isNaN(score) || score < 0 || score > 10) return;
+      json.forEach((row, index) => {
+        const rowNum = index + 2; // Row number in Excel (header is row 1)
 
-        // Find name or code columns
-        const nameKey = Object.keys(row).find(key => 
-          key.toLowerCase().includes('họ') || 
-          key.toLowerCase().includes('ho') || 
-          key.toLowerCase().includes('tên') || 
-          key.toLowerCase().includes('ten') || 
-          key.toLowerCase().includes('name')
-        );
-        const nameVal = nameKey ? String(row[nameKey] || '').trim() : '';
+        // Find keys dynamically by matching name patterns (case and space insensitive)
+        const sttKey = Object.keys(row).find(key => key.toUpperCase().trim() === 'STT');
+        const nameKey = Object.keys(row).find(key => {
+          const k = key.toUpperCase().replace(/\s+/g, '');
+          return k === 'HỌVÀTÊN' || k === 'HOVATEN' || k === 'HỌTÊN' || k === 'HOTEN' || k === 'NAME';
+        });
+        const classKey = Object.keys(row).find(key => {
+          const k = key.toUpperCase().replace(/\s+/g, '');
+          return k === 'LỚP' || k === 'LOP' || k === 'CLASS';
+        });
+        const scoreKey = Object.keys(row).find(key => {
+          const k = key.toUpperCase().replace(/\s+/g, '');
+          return k.includes('ĐIỂM') || k.includes('DIEM') || k.includes('KTTX') || k.includes('SCORE');
+        });
 
-        const codeKey = Object.keys(row).find(key => 
-          key.toLowerCase().includes('mã') || 
-          key.toLowerCase().includes('ma') || 
-          key.toLowerCase().includes('code')
-        );
-        const codeVal = codeKey ? String(row[codeKey] || '').trim() : '';
-
-        let matchedStudent = null;
-        if (codeVal) {
-          matchedStudent = studentsData.find(s => s.student_code.toLowerCase() === codeVal.toLowerCase());
+        // 1. Column presence check
+        if (sttKey === undefined) {
+          errors.push(`Dòng ${rowNum}: Cột 'STT' không tìm thấy.`);
+          return;
         }
-        if (!matchedStudent && nameVal) {
-          const normName = nameVal.toLowerCase().replace(/\s+/g, ' ').trim();
-          matchedStudent = studentsData.find(s => s.full_name.toLowerCase().replace(/\s+/g, ' ').trim() === normName);
+        if (nameKey === undefined) {
+          errors.push(`Dòng ${rowNum}: Cột 'Họ và Tên' không tìm thấy.`);
+          return;
+        }
+        if (classKey === undefined) {
+          errors.push(`Dòng ${rowNum}: Cột 'Lớp' không tìm thấy.`);
+          return;
+        }
+        if (scoreKey === undefined) {
+          errors.push(`Dòng ${rowNum}: Cột 'Điểm KTTX' không tìm thấy.`);
+          return;
         }
 
-        if (matchedStudent) {
-          const inputEl = document.querySelector(`.score-input[data-sid="${matchedStudent.id}"]`);
-          if (inputEl) {
-            inputEl.value = score.toFixed(1);
-            // Highlight successfully loaded input on the UI
-            inputEl.style.borderColor = '#10b981';
-            inputEl.style.backgroundColor = 'rgba(16, 185, 129, 0.1)';
-            matchedCount++;
-          }
-          successCount++;
+        const rawStt = String(row[sttKey] || '').trim();
+        const rawName = String(row[nameKey] || '').trim();
+        const rawClass = String(row[classKey] || '').trim();
+        const rawScore = String(row[scoreKey] || '').trim();
+
+        if (!rawStt) {
+          errors.push(`Dòng ${rowNum}: STT không được để trống.`);
+          return;
         }
+        if (!rawName) {
+          errors.push(`Dòng ${rowNum}: Họ và tên không được để trống.`);
+          return;
+        }
+        if (!rawClass) {
+          errors.push(`Dòng ${rowNum}: Lớp không được để trống.`);
+          return;
+        }
+        if (!rawScore) {
+          errors.push(`Dòng ${rowNum}: Điểm KTTX không được để trống.`);
+          return;
+        }
+
+        // 2. Validate score ranges
+        const scoreVal = parseFloat(rawScore);
+        if (isNaN(scoreVal) || scoreVal < 0 || scoreVal > 10) {
+          errors.push(`Dòng ${rowNum}: Điểm KTTX '${rawScore}' không hợp lệ (phải là số thập phân từ 0 đến 10).`);
+          return;
+        }
+
+        // 3. Match student by STT (student_code)
+        const matchedStudent = studentsData.find(s => {
+          const sCodeStr = String(s.student_code || '').trim();
+          const rawSttStr = String(rawStt).trim();
+          if (sCodeStr === rawSttStr) return true;
+          // Support numerical comparison if both are integers
+          const sCodeInt = parseInt(sCodeStr);
+          const rawSttInt = parseInt(rawSttStr);
+          if (!isNaN(sCodeInt) && !isNaN(rawSttInt) && sCodeInt === rawSttInt) return true;
+          return false;
+        });
+
+        if (!matchedStudent) {
+          errors.push(`Dòng ${rowNum}: STT '${rawStt}' không tồn tại trong hệ thống.`);
+          return;
+        }
+
+        // 4. Match student by Name and Class name to avoid mix-ups
+        const dbNameNorm = matchedStudent.full_name.toLowerCase().replace(/\s+/g, ' ').trim();
+        const fileNameNorm = rawName.toLowerCase().replace(/\s+/g, ' ').trim();
+        const dbClassNorm = (matchedStudent.class_name || '').toLowerCase().replace(/\s+/g, ' ').trim();
+        const fileClassNorm = rawClass.toLowerCase().replace(/\s+/g, ' ').trim();
+
+        if (dbNameNorm !== fileNameNorm || dbClassNorm !== fileClassNorm) {
+          errors.push(`Dòng ${rowNum}: STT ${rawStt} không khớp với thông tin học sinh hiện tại.`);
+          return;
+        }
+
+        // Buffer valid updates
+        validUpdates.push({
+          student_id: matchedStudent.id,
+          score_type_id: selectedKttxPeriod,
+          score: scoreVal
+        });
       });
 
-      if (successCount === 0) {
-        showToast("Không tìm thấy học sinh trùng khớp hoặc điểm số không hợp lệ!", "error");
-      } else {
-        showToast(`Đã nạp thành công ${matchedCount}/${successCount} điểm học sinh lên bảng điểm! Hãy kiểm tra lại và bấm 'Lưu Điểm & Chốt'.`, "success");
+      // 5. Present validation errors if any
+      if (errors.length > 0) {
+        alert("Lỗi nhập điểm từ Excel:\n\n" + errors.slice(0, 15).join("\n") + (errors.length > 15 ? `\n... và ${errors.length - 15} dòng lỗi khác.` : ""));
+        return;
+      }
+
+      if (validUpdates.length === 0) {
+        showToast("Không có dữ liệu điểm hợp lệ để cập nhật!", "error");
+        return;
+      }
+
+      // Send updates directly to the database via existing batch-update API
+      try {
+        const res = await fetch('/api/scores/batch-update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(validUpdates)
+        });
+
+        if (res.ok) {
+          showToast(`Đã nạp thành công ${validUpdates.length} điểm học sinh vào cơ sở dữ liệu và tự động tính lại điểm chốt!`, "success");
+          await loadInitialData(); // Refreshes table scores and calculations
+        } else {
+          showToast("Lỗi khi lưu điểm vào database!", "error");
+        }
+      } catch (err) {
+        console.error("Save imported scores error:", err);
+        showToast("Lỗi kết nối mạng khi lưu điểm!", "error");
       }
     } catch (err) {
       console.error("Excel score parse error:", err);
