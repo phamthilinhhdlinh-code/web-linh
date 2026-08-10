@@ -81,29 +81,30 @@ def get_db():
     if DATABASE_URL:
         import psycopg
         from psycopg.rows import dict_row
-        from psycopg.conninfo import make_conninfo
-        import urllib.parse
+        import psycopg.conninfo
         import socket
 
         # Resolve hostname to IPv4 dynamically to prevent Vercel IPv6 connection errors
         resolved_url = DATABASE_URL
         try:
-            parsed = urllib.parse.urlparse(DATABASE_URL)
-            host = parsed.hostname
+            # Parse connection info securely using psycopg's native parser
+            conn_dict = psycopg.conninfo.conninfo_to_dict(DATABASE_URL)
+            host = conn_dict.get('host')
             if host:
                 ipv4 = socket.gethostbyname(host)
-                resolved_url = make_conninfo(DATABASE_URL, host=ipv4)
+                conn_dict['host'] = ipv4
+                resolved_url = psycopg.conninfo.make_conninfo(**conn_dict)
                 db_error_trace = f"Resolution success: resolved {host} to IPv4 {ipv4}"
         except Exception as e:
             import traceback
-            db_error_trace = f"Resolution error for host {parsed.hostname if 'parsed' in locals() else 'unknown'}: {str(e)}\n{traceback.format_exc()}"
+            db_error_trace = f"Resolution error: {str(e)}\n{traceback.format_exc()}"
 
         try:
             conn = psycopg.connect(resolved_url, sslmode='require', row_factory=dict_row)
             return PostgresConnectionProxy(conn)
         except Exception as e:
             import traceback
-            db_error_trace = (db_error_trace or "") + f"\nConnection error for resolved {resolved_url} (original: {DATABASE_URL}): {str(e)}\n{traceback.format_exc()}"
+            db_error_trace = (db_error_trace or "") + f"\nConnection error occurred: {str(e)}\n{traceback.format_exc()}"
             raise e
     else:
         conn = sqlite3.connect(DB_FILE)
