@@ -431,6 +431,9 @@
               <i class="fa-solid fa-file-export"></i> Xuất Báo Cáo
             </button>
             <input type="file" id="excel-score-input" accept=".xlsx, .xls, .csv" style="display: none;" onchange="handleExcelScoreUpload(event)">
+            <button id="btn-download-score-template" onclick="downloadExcelScoreTemplate()" class="bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg text-xs font-semibold shadow transition flex items-center gap-1">
+              <i class="fa-solid fa-file-arrow-down"></i> Tải Mẫu Excel
+            </button>
             <button id="btn-import-scores" onclick="triggerExcelScoreInput()" class="bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg text-xs font-semibold shadow transition flex items-center gap-1">
               <i class="fa-solid fa-file-excel"></i> Nạp Điểm Excel
             </button>
