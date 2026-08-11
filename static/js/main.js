@@ -1289,7 +1289,6 @@ async function confirmDeleteStudent(studentId, studentName) {
       console.error("Delete error:", err);
       showToast(`Lỗi xóa học sinh: ${err.message}`, "error");
     }
-    }
   }
 }
 
@@ -2144,6 +2143,7 @@ async function submitEditStudent(event) {
     is_group_leader: document.getElementById('edit-is-leader-check').checked
   };
 
+  try {
     const data = await requestApi(`/api/student/${studentId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
