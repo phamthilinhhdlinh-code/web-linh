@@ -7,6 +7,13 @@ from flask_cors import CORS
 app = Flask(__name__, static_folder='static')
 CORS(app)
 
+@app.after_request
+def add_header(response):
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
+
 DB_FILE = os.path.join(os.path.dirname(__file__), 'database.db')
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
@@ -87,14 +94,24 @@ def get_db():
         # Resolve hostname to IPv4 dynamically to prevent Vercel IPv6 connection errors
         resolved_url = DATABASE_URL
         try:
-            # Parse connection info securely using psycopg's native parser
-            conn_dict = psycopg.conninfo.conninfo_to_dict(DATABASE_URL)
-            host = conn_dict.get('host')
-            if host:
-                ipv4 = socket.gethostbyname(host)
-                conn_dict['host'] = ipv4
-                resolved_url = psycopg.conninfo.make_conninfo(**conn_dict)
-                db_error_trace = f"Resolution success: resolved {host} to IPv4 {ipv4}"
+            # Check if there are multiple @ in the DATABASE_URL (common with special character passwords)
+            if "://" in DATABASE_URL:
+                scheme, rest = DATABASE_URL.split("://", 1)
+                if "@" in rest:
+                    creds, host_part = rest.rsplit("@", 1)
+                    host_name = host_part.split("/")[0].split(":")[0]
+                    ipv4 = socket.gethostbyname(host_name)
+                    new_host_part = host_part.replace(host_name, ipv4, 1)
+                    resolved_url = f"{scheme}://{creds}@{new_host_part}"
+                    db_error_trace = f"Resolution success: resolved {host_name} to IPv4 {ipv4}"
+                else:
+                    conn_dict = psycopg.conninfo.conninfo_to_dict(DATABASE_URL)
+                    host = conn_dict.get('host')
+                    if host:
+                        ipv4 = socket.gethostbyname(host)
+                        conn_dict['host'] = ipv4
+                        resolved_url = psycopg.conninfo.make_conninfo(**conn_dict)
+                        db_error_trace = f"Resolution success: resolved {host} to IPv4 {ipv4}"
         except Exception as e:
             import traceback
             db_error_trace = f"Resolution error: {str(e)}\n{traceback.format_exc()}"
@@ -394,11 +411,7 @@ def init_db():
 
     conn.close()
 
-# Initialize database on module import (required for serverless platforms like Vercel)
-try:
-    init_db()
-except Exception as e:
-    app.logger.error(f"Database initialization error: {str(e)}")
+
 
 def seed_data(conn):
     cursor = conn.cursor()
@@ -584,18 +597,22 @@ def recalculate_all_final_grades(conn=None):
     for r in st_rows:
         cat = db_row_value(r, 'category', 1)
         st_id = db_row_value(r, 'id', 0)
-        if cat and cat.startswith('KTTX'):
-            try:
-                period_num = int(cat[4:])
-                st_map[period_num] = st_id
-            except ValueError:
-                pass
+        if cat:
+            cat_clean = cat.upper().replace(" ", "").replace("-", "").replace("_", "").strip()
+            if cat_clean.startswith('KTTX'):
+                try:
+                    period_num = int(cat_clean[4:])
+                    st_map[period_num] = st_id
+                except ValueError:
+                    pass
 
     for s in students:
         s_id = s['id']
         
         for period in [1, 2, 3, 4]:
-            score_type_id = st_map.get(period, period)
+            if period not in st_map:
+                continue
+            score_type_id = st_map[period]
 
             # 1. Calc Avg KTTX
             cursor.execute("SELECT score FROM regular_scores WHERE student_id = ? AND score_type_id = ? LIMIT 1;", (s_id, score_type_id))
@@ -606,10 +623,10 @@ def recalculate_all_final_grades(conn=None):
             # 2. Calc Total Approved Bonus/Penalty Points in the week range for this period
             w_start, w_end = period_weeks[period]
             cursor.execute("""
-                SELECT SUM(points) FROM bonus_penalty_logs
+                SELECT SUM(points) AS sum_val FROM bonus_penalty_logs
                 WHERE student_id = ? AND status = 'APPROVED' AND week_number BETWEEN ? AND ?;
             """, (s_id, w_start, w_end))
-            total_bp = db_row_value(cursor.fetchone(), 'sum', 0) or 0.0
+            total_bp = db_row_value(cursor.fetchone(), 'sum_val', 0) or 0.0
             total_bp = round(total_bp, 2)
 
             # 3. Calculate Final Grade = min(10.0, max(0.0, avg_kttx + total_bp))
@@ -643,6 +660,12 @@ def recalculate_all_final_grades(conn=None):
     conn.commit()
     if close_at_end:
         conn.close()
+
+# Initialize database on module import (required for serverless platforms like Vercel)
+try:
+    init_db()
+except Exception as e:
+    app.logger.error(f"Database initialization error: {str(e)}")
 
 # ----------------- API ENDPOINTS -----------------
 
@@ -1025,25 +1048,33 @@ def handle_bonus_penalty():
         declared_by_id = data.get('declared_by_student_id')
         week_number = int(data.get('week_number', 1))
 
-        # Find group_id of student
-        cursor.execute("SELECT group_id FROM students WHERE id = ?;", (student_id,))
-        s_row = cursor.fetchone()
-        if not s_row:
+        try:
+            # Find group_id of student
+            cursor.execute("SELECT group_id FROM students WHERE id = ?;", (student_id,))
+            s_row = cursor.fetchone()
+            if not s_row:
+                conn.close()
+                return jsonify({'error': 'Không tìm thấy học sinh để khai báo'}), 400
+
+            group_id = s_row['group_id']
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            cursor.execute("""
+                INSERT INTO bonus_penalty_logs
+                (student_id, group_id, type, points, reason, category_type, declared_by_student_id, status, week_number, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?);
+            """, (student_id, group_id, log_type, points, reason, category_type, declared_by_id, week_number, now_str))
+
+            conn.commit()
             conn.close()
-            return jsonify({'error': 'Student not found'}), 400
-
-        group_id = s_row['group_id']
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        cursor.execute("""
-            INSERT INTO bonus_penalty_logs
-            (student_id, group_id, type, points, reason, category_type, declared_by_student_id, status, week_number, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?);
-        """, (student_id, group_id, log_type, points, reason, category_type, declared_by_id, week_number, now_str))
-
-        conn.commit()
-        conn.close()
-        return jsonify({'message': 'Khai báo điểm thành công! Đang chờ Giáo viên duyệt.'}), 201
+            return jsonify({'message': 'Khai báo điểm thành công! Đang chờ Giáo viên duyệt.'}), 201
+        except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            conn.close()
+            return jsonify({'error': f'Lỗi hệ thống khi gửi khai báo thi đua: {str(e)}'}), 400
 
 @app.route('/api/bonus-penalty/<int:log_id>/review', methods=['PUT'])
 def review_bonus_penalty(log_id):
@@ -1052,76 +1083,123 @@ def review_bonus_penalty(log_id):
     teacher_note = data.get('teacher_note', '')
 
     if status not in ['APPROVED', 'REJECTED']:
-        return jsonify({'error': 'Invalid status'}), 400
+        return jsonify({'error': 'Trạng thái duyệt không hợp lệ'}), 400
 
     conn = get_db()
     cursor = conn.cursor()
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    cursor.execute("""
-        UPDATE bonus_penalty_logs
-        SET status = ?, teacher_note = ?, reviewed_at = ?
-        WHERE id = ?;
-    """, (status, teacher_note, now_str, log_id))
+    try:
+        cursor.execute("""
+            UPDATE bonus_penalty_logs
+            SET status = ?, teacher_note = ?, reviewed_at = ?
+            WHERE id = ?;
+        """, (status, teacher_note, now_str, log_id))
 
-    conn.commit()
+        conn.commit()
 
-    # Recalculate grades automatically
-    recalculate_all_final_grades(conn)
+        # Recalculate grades automatically
+        recalculate_all_final_grades(conn)
 
-    conn.close()
-    return jsonify({'message': f'Đã cập nhật trạng thái: {status}'})
+        conn.close()
+        return jsonify({'message': f'Đã cập nhật trạng thái: {status}'})
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        conn.close()
+        return jsonify({'error': f'Lỗi hệ thống khi duyệt khai báo: {str(e)}'}), 400
 
 @app.route('/api/scores/batch-update', methods=['POST'])
 def update_scores():
     data = request.json # list of {student_id, score_type_id, score}
+    if not data or not isinstance(data, list):
+        return jsonify({'error': 'Dữ liệu không hợp lệ. Payload phải là một danh sách.'}), 400
+
     conn = get_db()
     cursor = conn.cursor()
 
     now_str = datetime.now().strftime("%Y-%m-%d")
 
-    # Map period index (1, 2, 3, 4) to actual score_type_id from database
-    cursor.execute("SELECT id, category FROM score_types;")
-    st_rows = cursor.fetchall()
-    st_map = {}
-    for r in st_rows:
-        cat = db_row_value(r, 'category', 1)
-        st_id = db_row_value(r, 'id', 0)
-        if cat and cat.startswith('KTTX'):
+    try:
+        # Map period index (1, 2, 3, 4) to actual score_type_id from database
+        cursor.execute("SELECT id, category FROM score_types;")
+        st_rows = cursor.fetchall()
+        st_map = {}
+        for r in st_rows:
+            cat = db_row_value(r, 'category', 1)
+            st_id = db_row_value(r, 'id', 0)
+            if cat:
+                cat_clean = cat.upper().replace(" ", "").replace("-", "").replace("_", "").strip()
+                if cat_clean.startswith('KTTX'):
+                    try:
+                        period_num = int(cat_clean[4:])
+                        st_map[period_num] = st_id
+                    except ValueError:
+                        pass
+
+        # Validate period numbers first
+        for item in data:
+            frontend_st_id = item.get('score_type_id')
+            if frontend_st_id not in st_map:
+                conn.close()
+                return jsonify({
+                    'error': f'Không tìm thấy loại điểm phù hợp cho đợt KTTX {frontend_st_id} trong database (có thể cấu hình score_types bị lệch). Danh sách đợt hiện có: {list(st_map.keys())}'
+                }), 400
+
+        for item in data:
+            s_id = item['student_id']
+            frontend_st_id = item['score_type_id']
+            st_id = st_map[frontend_st_id]
+            val = float(item['score'])
+
+            # Check if score entry exists
+            cursor.execute("SELECT id FROM regular_scores WHERE student_id = ? AND score_type_id = ?;", (s_id, st_id))
+            existing = cursor.fetchone()
+            if existing:
+                cursor.execute("UPDATE regular_scores SET score = ?, date_logged = ? WHERE id = ?;", (val, now_str, existing['id']))
+            else:
+                cursor.execute("INSERT INTO regular_scores (student_id, score_type_id, score, date_logged) VALUES (?, ?, ?, ?);",
+                               (s_id, st_id, val, now_str))
+
+        conn.commit()
+
+        # Recalculate grades
+        recalculate_all_final_grades(conn)
+        conn.close()
+
+        return jsonify({'message': 'Đã cập nhật điểm KTTX & Tính lại điểm chốt thành công!'})
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        conn.close()
+        import traceback
+        tb = traceback.format_exc()
+        if DATABASE_URL:
             try:
-                period_num = int(cat[4:])
-                st_map[period_num] = st_id
-            except ValueError:
+                if "://" in DATABASE_URL:
+                    scheme, rest = DATABASE_URL.split("://", 1)
+                    if "@" in rest:
+                        creds, _ = rest.rsplit("@", 1)
+                        tb = tb.replace(creds, "postgres:********")
+            except Exception:
                 pass
-
-    for item in data:
-        s_id = item['student_id']
-        frontend_st_id = item['score_type_id']
-        st_id = st_map.get(frontend_st_id, frontend_st_id)
-        val = float(item['score'])
-
-        # Check if score entry exists
-        cursor.execute("SELECT id FROM regular_scores WHERE student_id = ? AND score_type_id = ?;", (s_id, st_id))
-        existing = cursor.fetchone()
-        if existing:
-            cursor.execute("UPDATE regular_scores SET score = ?, date_logged = ? WHERE id = ?;", (val, now_str, existing['id']))
-        else:
-            cursor.execute("INSERT INTO regular_scores (student_id, score_type_id, score, date_logged) VALUES (?, ?, ?, ?);",
-                           (s_id, st_id, val, now_str))
-
-    conn.commit()
-
-    # Recalculate grades
-    recalculate_all_final_grades(conn)
-    conn.close()
-
-    return jsonify({'message': 'Đã cập nhật điểm KTTX & Tính lại điểm chốt thành công!'})
+        return jsonify({
+            'error': f'Lỗi hệ thống khi lưu điểm vào database: {str(e)}',
+            'traceback': tb
+        }), 400
 
 @app.route('/api/recalculate-all', methods=['POST'])
 def api_recalculate_all():
-    recalculate_all_final_grades()
-    return jsonify({'message': 'Đã tính lại toàn bộ điểm chốt KHTN thành công!'})
+    try:
+        recalculate_all_final_grades()
+        return jsonify({'message': 'Đã tính lại toàn bộ điểm chốt KHTN thành công!'})
+    except Exception as e:
+        return jsonify({'error': f'Lỗi hệ thống khi tính lại điểm chốt: {str(e)}'}), 400
 
 @app.route('/api/leaderboard', methods=['GET'])
 def get_leaderboard():
@@ -1378,19 +1456,28 @@ def delete_student(student_id):
     conn = get_db()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT full_name FROM students WHERE id = ?;", (student_id,))
-    row = cursor.fetchone()
-    if not row:
+    try:
+        cursor.execute("SELECT full_name FROM students WHERE id = ?;", (student_id,))
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({'error': 'Học sinh không tồn tại'}), 404
+
+        s_name = row['full_name']
+        cursor.execute("DELETE FROM students WHERE id = ?;", (student_id,))
+        conn.commit()
+        
+        recalculate_all_final_grades(conn)
         conn.close()
-        return jsonify({'error': 'Học sinh không tồn tại'}), 404
 
-    s_name = row['full_name']
-    cursor.execute("DELETE FROM students WHERE id = ?;", (student_id,))
-    conn.commit()
-    recalculate_all_final_grades(conn)
-    conn.close()
-
-    return jsonify({'message': f'Đã xóa học sinh {s_name} khỏi hệ thống.'})
+        return jsonify({'message': f'Đã xóa học sinh {s_name} khỏi hệ thống.'})
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        conn.close()
+        return jsonify({'error': f'Lỗi hệ thống khi xóa học sinh: {str(e)}'}), 400
 
 # Edit Student Endpoint
 @app.route('/api/student/<int:student_id>', methods=['PUT'])
@@ -1457,26 +1544,34 @@ def add_teacher_comment(student_id):
     cursor = conn.cursor()
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    cursor.execute("""
-        SELECT id FROM teacher_comments WHERE student_id = ? AND week_num = ?;
-    """, (student_id, week_num))
-    existing = cursor.fetchone()
-
-    if existing:
+    try:
         cursor.execute("""
-            UPDATE teacher_comments
-            SET comment = ?, badge = ?, created_at = ?
-            WHERE student_id = ? AND week_num = ?;
-        """, (comment, badge, now_str, student_id, week_num))
-    else:
-        cursor.execute("""
-            INSERT INTO teacher_comments (student_id, week_num, comment, badge, created_at)
-            VALUES (?, ?, ?, ?, ?);
-        """, (student_id, week_num, comment, badge, now_str))
+            SELECT id FROM teacher_comments WHERE student_id = ? AND week_num = ?;
+        """, (student_id, week_num))
+        existing = cursor.fetchone()
 
-    conn.commit()
-    conn.close()
-    return jsonify({'message': 'Đã cập nhật nhận xét và danh hiệu tuyên dương thành công!'}), 201
+        if existing:
+            cursor.execute("""
+                UPDATE teacher_comments
+                SET comment = ?, badge = ?, created_at = ?
+                WHERE student_id = ? AND week_num = ?;
+            """, (comment, badge, now_str, student_id, week_num))
+        else:
+            cursor.execute("""
+                INSERT INTO teacher_comments (student_id, week_num, comment, badge, created_at)
+                VALUES (?, ?, ?, ?, ?);
+            """, (student_id, week_num, comment, badge, now_str))
+
+        conn.commit()
+        conn.close()
+        return jsonify({'message': 'Đã cập nhật nhận xét và danh hiệu tuyên dương thành công!'}), 201
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        conn.close()
+        return jsonify({'error': f'Lỗi hệ thống khi lưu nhận xét: {str(e)}'}), 400
 
 # System Metrics Endpoint for Interactive Architecture visualizer
 @app.route('/api/system/metrics', methods=['GET'])
@@ -1557,6 +1652,16 @@ def serve_static(path):
 def handle_500(e):
     import traceback
     tb = traceback.format_exc()
+    if DATABASE_URL:
+        try:
+            if "://" in DATABASE_URL:
+                scheme, rest = DATABASE_URL.split("://", 1)
+                if "@" in rest:
+                    creds, _ = rest.rsplit("@", 1)
+                    tb = tb.replace(creds, "postgres:********")
+                    tb = tb.replace(DATABASE_URL, "postgresql://postgres:********@...")
+        except Exception:
+            pass
     global db_error_trace
     app.logger.error(f"Internal Server Error: {tb}")
     return jsonify({
