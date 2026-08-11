@@ -512,7 +512,7 @@ async function saveAllScores() {
 
 // Manual Recalculate Trigger
 async function recalculateAll() {
-  await fetch('/api/recalculate-all', { method: 'POST' });
+  await requestApi('/api/recalculate-all', { method: 'POST' });
   await loadInitialData();
   showToast("Đã tính toán lại toàn bộ điểm chốt KHTN!", "success");
 }
