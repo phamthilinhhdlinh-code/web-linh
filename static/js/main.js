@@ -65,6 +65,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // Helper to perform API requests with error handling
 async function requestApi(url, options = {}) {
+  // Add Cache Buster for all GET requests to prevent Vercel CDN caching
+  const method = (options.method || 'GET').toUpperCase();
+  if (method === 'GET') {
+    const separator = url.includes('?') ? '&' : '?';
+    url = `${url}${separator}_t=${Date.now()}`;
+  }
+
   try {
     const res = await fetch(url, options);
     const text = await res.text();
@@ -73,13 +80,13 @@ async function requestApi(url, options = {}) {
       data = JSON.parse(text);
     } catch (e) {
       if (!res.ok) {
-        throw new Error(`Server Error (${res.status}): ${text.substring(0, 120)}`);
+        throw new Error(`Lỗi máy chủ (${res.status}): ${text.substring(0, 120)}`);
       }
-      throw new Error(`Invalid JSON response: ${text.substring(0, 50)}`);
+      throw new Error(`Phản hồi JSON không hợp lệ: ${text.substring(0, 50)}`);
     }
 
     if (!res.ok) {
-      throw new Error(data.error || data.message || `API Error (${res.status})`);
+      throw new Error(data.error || data.message || `Lỗi API (${res.status})`);
     }
     return data;
   } catch (err) {
@@ -188,16 +195,18 @@ async function fetchLeaderboard() {
 
 // Fetch Group Declaration Logs for Group Leader
 async function fetchGroupLogs(groupId) {
-  const res = await fetch(`/api/bonus-penalty?group_id=${groupId}`);
-  const logs = await res.json();
-  renderGroupLogsTable(logs);
+  try {
+    const logs = await requestApi(`/api/bonus-penalty?group_id=${groupId}`);
+    renderGroupLogsTable(logs);
+  } catch (err) {
+    console.error("fetchGroupLogs error:", err);
+  }
 }
 
 // Fetch System Metrics for Interactive Architecture Visualizer
 async function fetchSystemMetrics() {
   try {
-    const res = await fetch('/api/system/metrics');
-    const data = await res.json();
+    const data = await requestApi('/api/system/metrics');
 
     document.getElementById('m-students').innerText = data.tables?.students || 0;
     document.getElementById('m-groups').innerText = data.tables?.groups || 0;
@@ -359,21 +368,18 @@ async function submitBonusPenalty(event) {
   };
 
   try {
-    const res = await fetch('/api/bonus-penalty', {
+    const data = await requestApi('/api/bonus-penalty', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
 
-    if (res.ok) {
-      showToast("Gửi khai báo thi đua thành công! Đang chờ Giáo viên duyệt.", "success");
-      document.getElementById('form-reason-input').value = '';
-      await loadInitialData();
-    } else {
-      showToast("Có lỗi xảy ra khi gửi khai báo.", "error");
-    }
+    showToast(data.message || "Gửi khai báo thi đua thành công! Đang chờ Giáo viên duyệt.", "success");
+    document.getElementById('form-reason-input').value = '';
+    await loadInitialData();
   } catch (err) {
     console.error("Submit error:", err);
+    showToast(`Có lỗi xảy ra khi gửi khai báo: ${err.message}`, "error");
   }
 }
 
@@ -419,18 +425,17 @@ function renderTeacherPendingTable() {
 // Review Log (Approve / Reject)
 async function reviewLog(logId, status) {
   try {
-    const res = await fetch(`/api/bonus-penalty/${logId}/review`, {
+    const data = await requestApi(`/api/bonus-penalty/${logId}/review`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: status, teacher_note: `Đã ${status === 'APPROVED' ? 'duyệt' : 'từ chối'} bởi Giáo viên KHTN` })
     });
 
-    if (res.ok) {
-      showToast(`Đã ${status === 'APPROVED' ? 'chấp nhận' : 'từ chối'} khai báo!`, status === 'APPROVED' ? 'success' : 'info');
-      await loadInitialData();
-    }
+    showToast(data.message || `Đã ${status === 'APPROVED' ? 'chấp nhận' : 'từ chối'} khai báo!`, status === 'APPROVED' ? 'success' : 'info');
+    await loadInitialData();
   } catch (err) {
     console.error("Review error:", err);
+    showToast(`Lỗi duyệt khai báo: ${err.message}`, "error");
   }
 }
 
@@ -491,18 +496,17 @@ async function saveAllScores() {
   });
 
   try {
-    const res = await fetch('/api/scores/batch-update', {
+    const data = await requestApi('/api/scores/batch-update', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
 
-    if (res.ok) {
-      showToast("Đã cập nhật điểm KTTX và tính lại điểm chốt KHTN thành công!", "success");
-      await loadInitialData();
-    }
+    showToast(data.message || "Đã cập nhật điểm KTTX và tính lại điểm chốt KHTN thành công!", "success");
+    await loadInitialData();
   } catch (err) {
     console.error("Save scores error:", err);
+    showToast(`Lỗi lưu điểm: ${err.message}`, "error");
   }
 }
 
@@ -868,15 +872,13 @@ async function submitLogin(event) {
   const p = document.getElementById('login-password').value;
 
   try {
-    const res = await fetch('/api/login', {
+    const data = await requestApi('/api/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: u, password: p })
     });
 
-    const data = await res.json();
-
-    if (res.ok && data.success) {
+    if (data.success) {
       showToast(`✅ ${data.message} Chào mừng ${data.name}!`, "success");
       closeLoginModal();
       document.getElementById('role-select').value = data.role;
@@ -887,7 +889,7 @@ async function submitLogin(event) {
     }
   } catch (err) {
     console.error("Login fetch error:", err);
-    showToast("ĐĂNG NHẬP KHÔNG THÀNH CÔNG! Không kết nối được tới server.", "error");
+    showToast(`ĐĂNG NHẬP THẤT BẠI: ${err.message}`, "error");
   }
 }
 
@@ -942,9 +944,7 @@ let rcChart = null;
 
 async function loadReportCard(studentId) {
   try {
-    const res = await fetch(`/api/student/${studentId}?period=${selectedKttxPeriod}`);
-    if (!res.ok) return;
-    const data = await res.json();
+    const data = await requestApi(`/api/student/${studentId}?period=${selectedKttxPeriod}`);
 
     const stt = getStudentSTT(data);
     document.getElementById('rc-name').innerText = `${stt}- ${data.full_name}`;
@@ -1068,7 +1068,7 @@ async function saveRcComment() {
   }
 
   try {
-    const res = await fetch(`/api/student/${studentId}/comment`, {
+    const data = await requestApi(`/api/student/${studentId}/comment`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1078,17 +1078,12 @@ async function saveRcComment() {
       })
     });
 
-    if (res.ok) {
-      showToast("Đã lưu nhận xét và danh hiệu thành công!", "success");
-      toggleEditComment(false);
-      await loadReportCard(studentId);
-    } else {
-      const err = await res.json();
-      showToast(err.error || "Không thể lưu nhận xét!", "error");
-    }
+    showToast(data.message || "Đã lưu nhận xét và danh hiệu thành công!", "success");
+    toggleEditComment(false);
+    await loadReportCard(studentId);
   } catch (err) {
     console.error("Save comment error:", err);
-    showToast("Lỗi kết nối khi lưu nhận xét!", "error");
+    showToast(`Không thể lưu nhận xét: ${err.message}`, "error");
   }
 }
 
@@ -1099,9 +1094,7 @@ async function openStudentModal(studentId) {
   if (!modal) return;
 
   try {
-    const res = await fetch(`/api/student/${studentId}`);
-    if (!res.ok) return;
-    const data = await res.json();
+    const data = await requestApi(`/api/student/${studentId}`);
 
     document.getElementById('student-modal-name').innerText = data.full_name;
     document.getElementById('student-modal-sub').innerText = `Mã HS: ${data.student_code} • ${data.class_name} - ${data.group_name} ${data.is_group_leader ? '👑 (Nhóm trưởng)' : ''}`;
@@ -1224,19 +1217,18 @@ async function submitTeacherComment(event) {
   const badgeVal = document.getElementById('comment-badge-select').value;
 
   try {
-    const res = await fetch(`/api/student/${activeModalStudentId}/comment`, {
+    const data = await requestApi(`/api/student/${activeModalStudentId}/comment`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ comment: commentText, badge: badgeVal, week_num: 1 })
     });
 
-    if (res.ok) {
-      showToast("Đã thêm nhận xét và tuyên dương thành công!", "success");
-      document.getElementById('comment-text-input').value = '';
-      openStudentModal(activeModalStudentId);
-    }
+    showToast(data.message || "Đã thêm nhận xét và tuyên dương thành công!", "success");
+    document.getElementById('comment-text-input').value = '';
+    openStudentModal(activeModalStudentId);
   } catch (err) {
     console.error("Comment submit error:", err);
+    showToast(`Lỗi thêm nhận xét: ${err.message}`, "error");
   }
 }
 
@@ -1264,7 +1256,7 @@ async function submitAddStudent(event) {
   const isLeader = document.getElementById('add-is-leader-check').checked;
 
   try {
-    const res = await fetch('/api/students', {
+    const data = await requestApi('/api/students', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1276,17 +1268,13 @@ async function submitAddStudent(event) {
       })
     });
 
-    const resData = await res.json();
-    if (res.ok) {
-      showToast(resData.message, "success");
-      closeAddStudentModal();
-      document.getElementById('form-add-student').reset();
-      await loadInitialData();
-    } else {
-      showToast(resData.error || "Có lỗi khi thêm học sinh", "error");
-    }
+    showToast(data.message || "Thêm học sinh thành công!", "success");
+    closeAddStudentModal();
+    document.getElementById('form-add-student').reset();
+    await loadInitialData();
   } catch (err) {
     console.error("Add student error:", err);
+    showToast(`Lỗi thêm học sinh: ${err.message}`, "error");
   }
 }
 
@@ -1294,16 +1282,13 @@ async function submitAddStudent(event) {
 async function confirmDeleteStudent(studentId, studentName) {
   if (confirm(`Bạn có chắc chắn muốn xóa học sinh "${studentName}" khỏi hệ thống không?`)) {
     try {
-      const res = await fetch(`/api/student/${studentId}`, { method: 'DELETE' });
-      const data = await res.json();
-      if (res.ok) {
-        showToast(data.message, "success");
-        await loadInitialData();
-      } else {
-        showToast(data.error || "Xóa thất bại", "error");
-      }
+      const data = await requestApi(`/api/student/${studentId}`, { method: 'DELETE' });
+      showToast(data.message || "Đã xóa học sinh thành công.", "success");
+      await loadInitialData();
     } catch (err) {
       console.error("Delete error:", err);
+      showToast(`Lỗi xóa học sinh: ${err.message}`, "error");
+    }
     }
   }
 }
@@ -1315,8 +1300,7 @@ async function exportDataSummary() {
     const classId = scoreClassSelect ? scoreClassSelect.value : 'ALL';
     
     const url = `/api/export/summary?class_id=${classId}&period=${selectedKttxPeriod}`;
-    const res = await fetch(url);
-    const data = await res.json();
+    const data = await requestApi(url);
 
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(data, null, 2));
     const downloadAnchor = document.createElement('a');
@@ -1388,8 +1372,7 @@ async function populateFilters() {
   if (classSelect) {
     classSelect.innerHTML = '<option value="ALL">Tất cả lớp học</option>';
     try {
-      const res = await fetch('/api/classes');
-      const classes = await res.json();
+      const classes = await requestApi('/api/classes');
       classes.forEach(c => {
         const opt = document.createElement('option');
         opt.value = c.id;
@@ -1405,8 +1388,7 @@ async function populateFilters() {
   if (lbClassSelect) {
     lbClassSelect.innerHTML = '<option value="ALL">Tất cả các lớp</option>';
     try {
-      const res = await fetch('/api/classes');
-      const classes = await res.json();
+      const classes = await requestApi('/api/classes');
       classes.forEach(c => {
         const opt = document.createElement('option');
         opt.value = c.id;
@@ -1463,8 +1445,7 @@ async function populateAddStudentClasses() {
   classSelect.innerHTML = '';
   
   try {
-    const res = await fetch('/api/classes');
-    const classes = await res.json();
+    const classes = await requestApi('/api/classes');
     classes.forEach(c => {
       const opt = document.createElement('option');
       opt.value = c.id;
@@ -1507,8 +1488,7 @@ async function populateDeclarationClasses() {
   classSelect.innerHTML = '';
   
   try {
-    const res = await fetch('/api/classes');
-    let classes = await res.json();
+    let classes = await requestApi('/api/classes');
     
     // Filter class list for group leaders
     if (currentRole.startsWith('LEADER_')) {
@@ -1578,8 +1558,7 @@ async function populateScoreClasses() {
   if (!scoreClassSelect) return;
   scoreClassSelect.innerHTML = '<option value="ALL">Tất cả lớp học</option>';
   try {
-    const res = await fetch('/api/classes');
-    const classes = await res.json();
+    const classes = await requestApi('/api/classes');
     classes.forEach(c => {
       const opt = document.createElement('option');
       opt.value = c.id;
@@ -1859,30 +1838,18 @@ async function confirmExcelImport() {
   showToast(`Đang tải lên ${pendingImportStudents.length} học sinh...`, "info");
 
   try {
-    const res = await fetch('/api/students/bulk-import', {
+    const data = await requestApi('/api/students/bulk-import', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(pendingImportStudents)
     });
     
-    let resData;
-    const text = await res.text();
-    try {
-      resData = JSON.parse(text);
-    } catch(e) {
-      resData = { error: `Lỗi Server (${res.status}): ${text.substring(0, 150)}` };
-    }
-    
-    if (res.ok) {
-      showToast(`Đã nhập thành công ${resData.success_count} học sinh!`, "success");
-      closePreviewImportModal();
-      await loadInitialData();
-    } else {
-      showToast(resData.error || "Nhập danh sách học sinh thất bại!", "error");
-    }
+    showToast(data.message || `Đã nhập thành công ${data.success_count} học sinh!`, "success");
+    closePreviewImportModal();
+    await loadInitialData();
   } catch (err) {
     console.error("Import submit error:", err);
-    showToast(`Lỗi kết nối mạng: ${err.message}`, "error");
+    showToast(`Nhập danh sách học sinh thất bại: ${err.message}`, "error");
   }
 }
 
@@ -2073,21 +2040,17 @@ async function handleExcelScoreUpload(event) {
 
       // Send updates directly to the database via existing batch-update API
       try {
-        const res = await fetch('/api/scores/batch-update', {
+        const data = await requestApi('/api/scores/batch-update', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(validUpdates)
         });
 
-        if (res.ok) {
-          showToast(`Đã nạp thành công ${validUpdates.length} điểm học sinh vào cơ sở dữ liệu và tự động tính lại điểm chốt!`, "success");
-          await loadInitialData(); // Refreshes table scores and calculations
-        } else {
-          showToast("Lỗi khi lưu điểm vào database!", "error");
-        }
+        showToast(data.message || `Đã nạp thành công ${validUpdates.length} điểm học sinh vào cơ sở dữ liệu và tự động tính lại điểm chốt!`, "success");
+        await loadInitialData(); // Refreshes table scores and calculations
       } catch (err) {
         console.error("Save imported scores error:", err);
-        showToast("Lỗi kết nối mạng khi lưu điểm!", "error");
+        showToast(`Lỗi khi nạp điểm: ${err.message}`, "error");
       }
     } catch (err) {
       console.error("Excel score parse error:", err);
@@ -2121,8 +2084,7 @@ async function openEditStudentModal(studentId) {
   if (classSelect) {
     classSelect.innerHTML = '';
     try {
-      const res = await fetch('/api/classes');
-      const classes = await res.json();
+      const classes = await requestApi('/api/classes');
       classes.forEach(c => {
         const opt = document.createElement('option');
         opt.value = c.id;
@@ -2182,24 +2144,18 @@ async function submitEditStudent(event) {
     is_group_leader: document.getElementById('edit-is-leader-check').checked
   };
 
-  try {
-    const res = await fetch(`/api/student/${studentId}`, {
+    const data = await requestApi(`/api/student/${studentId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-    const data = await res.json();
     
-    if (res.ok) {
-      showToast(data.message || "Cập nhật hồ sơ học sinh thành công!", "success");
-      closeEditStudentModal();
-      await loadInitialData();
-    } else {
-      showToast(data.error || "Cập nhật thất bại!", "error");
-    }
+    showToast(data.message || "Cập nhật hồ sơ học sinh thành công!", "success");
+    closeEditStudentModal();
+    await loadInitialData();
   } catch (err) {
     console.error("Edit student submit error:", err);
-    showToast("Lỗi hệ thống khi cập nhật hồ sơ!", "error");
+    showToast(`Lỗi cập nhật hồ sơ: ${err.message}`, "error");
   }
 }
 
@@ -2208,8 +2164,7 @@ async function populateReportCardClasses() {
   if (!select) return;
   select.innerHTML = '<option value="ALL">Tất cả các lớp</option>';
   try {
-    const res = await fetch('/api/classes');
-    const classes = await res.json();
+    const classes = await requestApi('/api/classes');
     classes.forEach(c => {
       const opt = document.createElement('option');
       opt.value = c.id;
@@ -2255,9 +2210,7 @@ async function printAllFiltered() {
   for (let i = 0; i < filtered.length; i++) {
     const s = filtered[i];
     try {
-      const res = await fetch(`/api/student/${s.id}?period=${selectedKttxPeriod}`);
-      if (!res.ok) continue;
-      const data = await res.json();
+      const data = await requestApi(`/api/student/${s.id}?period=${selectedKttxPeriod}`);
       
       const stt = getStudentSTT(data);
       const totalBpVal = data.total_bonus_penalty || 0;
