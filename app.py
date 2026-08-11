@@ -141,6 +141,25 @@ def db_row_value(row, col_name, col_index=0):
         pass
     return None
 
+
+def ensure_score_types(conn):
+    db_url = os.environ.get("DATABASE_URL")
+    placeholder = "%s" if db_url else "?"
+    cursor = conn.cursor()
+    score_types = [
+        ("Đánh giá thường xuyên 1", "KTTX1", 1.0),
+        ("Đánh giá thường xuyên 2", "KTTX2", 1.0),
+        ("Đánh giá thường xuyên 3", "KTTX3", 1.0),
+        ("Đánh giá thường xuyên 4", "KTTX4", 1.0),
+    ]
+    for name, cat, weight in score_types:
+        cursor.execute(f"SELECT id FROM score_types WHERE category = {placeholder};", (cat,))
+        row = cursor.fetchone()
+        row_id = db_row_value(row, 'id', 0)
+        if row_id is None:
+            cursor.execute(f"INSERT INTO score_types (name, category, weight) VALUES ({placeholder}, {placeholder}, {placeholder});", (name, cat, weight))
+    conn.commit()
+
 def init_db():
     db_url = os.environ.get("DATABASE_URL")
     is_postgres = db_url is not None
@@ -408,6 +427,9 @@ def init_db():
     count_val = db_row_value(cursor.fetchone(), 'count', 0)
     if count_val == 0:
         seed_data(conn)
+
+    # Ensure mandatory configurations exist under all circumstances
+    ensure_score_types(conn)
 
     conn.close()
 
