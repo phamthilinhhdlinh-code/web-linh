@@ -232,6 +232,17 @@ async function fetchSystemMetrics() {
   }
 }
 
+// Optimized helper to reload only specific data streams after operations
+async function reloadDataStreams(streams = { students: true, overview: true, groups: false, pendingLogs: false }) {
+  const promises = [];
+  if (streams.groups) promises.push(fetchGroups());
+  if (streams.students) promises.push(fetchStudents());
+  if (streams.overview) promises.push(fetchOverview());
+  if (streams.pendingLogs) promises.push(fetchPendingLogs());
+  
+  await Promise.all(promises);
+}
+
 // --- ROLE SWITCHING LOGIC ---
 async function switchRole(role) {
   currentRole = role;
@@ -432,7 +443,7 @@ async function submitBonusPenalty(event) {
 
     showToast(data.message || "Gửi khai báo thi đua thành công! Đang chờ Giáo viên duyệt.", "success");
     document.getElementById('form-reason-input').value = '';
-    await loadInitialData();
+    await reloadDataStreams({ students: false, overview: true, groups: false, pendingLogs: true });
   } catch (err) {
     console.error("Submit error:", err);
     showToast(`Có lỗi xảy ra khi gửi khai báo: ${err.message}`, "error");
@@ -488,7 +499,7 @@ async function reviewLog(logId, status) {
     });
 
     showToast(data.message || `Đã ${status === 'APPROVED' ? 'chấp nhận' : 'từ chối'} khai báo!`, status === 'APPROVED' ? 'success' : 'info');
-    await loadInitialData();
+    await reloadDataStreams({ students: true, overview: true, groups: false, pendingLogs: true });
   } catch (err) {
     console.error("Review error:", err);
     showToast(`Lỗi duyệt khai báo: ${err.message}`, "error");
@@ -559,7 +570,7 @@ async function saveAllScores() {
     });
 
     showToast(data.message || "Đã cập nhật điểm KTTX và tính lại điểm chốt KHTN thành công!", "success");
-    await loadInitialData();
+    await reloadDataStreams({ students: true, overview: true, groups: false, pendingLogs: false });
   } catch (err) {
     console.error("Save scores error:", err);
     showToast(`Lỗi lưu điểm: ${err.message}`, "error");
@@ -569,7 +580,7 @@ async function saveAllScores() {
 // Manual Recalculate Trigger
 async function recalculateAll() {
   await requestApi('/api/recalculate-all', { method: 'POST' });
-  await loadInitialData();
+  await reloadDataStreams({ students: true, overview: true, groups: false, pendingLogs: false });
   showToast("Đã tính toán lại toàn bộ điểm chốt KHTN!", "success");
 }
 
@@ -1367,7 +1378,7 @@ async function submitAddStudent(event) {
     showToast(data.message || "Thêm học sinh thành công!", "success");
     closeAddStudentModal();
     document.getElementById('form-add-student').reset();
-    await loadInitialData();
+    await reloadDataStreams({ students: true, overview: true, groups: true, pendingLogs: false });
   } catch (err) {
     console.error("Add student error:", err);
     showToast(`Lỗi thêm học sinh: ${err.message}`, "error");
@@ -1380,7 +1391,7 @@ async function confirmDeleteStudent(studentId, studentName) {
     try {
       const data = await requestApi(`/api/student/${studentId}`, { method: 'DELETE' });
       showToast(data.message || "Đã xóa học sinh thành công.", "success");
-      await loadInitialData();
+      await reloadDataStreams({ students: true, overview: true, groups: true, pendingLogs: false });
     } catch (err) {
       console.error("Delete error:", err);
       showToast(`Lỗi xóa học sinh: ${err.message}`, "error");
@@ -1945,7 +1956,7 @@ async function confirmExcelImport() {
     
     showToast(data.message || `Đã nhập thành công ${data.success_count} học sinh!`, "success");
     closePreviewImportModal();
-    await loadInitialData();
+    await reloadDataStreams({ students: true, overview: true, groups: true, pendingLogs: false });
   } catch (err) {
     console.error("Import submit error:", err);
     showToast(`Nhập danh sách học sinh thất bại: ${err.message}`, "error");
@@ -2146,7 +2157,7 @@ async function handleExcelScoreUpload(event) {
         });
 
         showToast(data.message || `Đã nạp thành công ${validUpdates.length} điểm học sinh vào cơ sở dữ liệu và tự động tính lại điểm chốt!`, "success");
-        await loadInitialData(); // Refreshes table scores and calculations
+        await reloadDataStreams({ students: true, overview: true, groups: false, pendingLogs: false }); // Refreshes table scores and calculations
       } catch (err) {
         console.error("Save imported scores error:", err);
         showToast(`Lỗi khi nạp điểm: ${err.message}`, "error");
@@ -2252,7 +2263,7 @@ async function submitEditStudent(event) {
     
     showToast(data.message || "Cập nhật hồ sơ học sinh thành công!", "success");
     closeEditStudentModal();
-    await loadInitialData();
+    await reloadDataStreams({ students: true, overview: false, groups: false, pendingLogs: false });
   } catch (err) {
     console.error("Edit student submit error:", err);
     showToast(`Lỗi cập nhật hồ sơ: ${err.message}`, "error");
