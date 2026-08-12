@@ -685,48 +685,46 @@ function renderLeaderboard() {
   // --- RENDER KỶ LUẬT / CẢNH BÁO ---
   const disciplineTitle = document.getElementById('leaderboard-discipline-title');
   if (disciplineTitle) {
-    disciplineTitle.innerHTML = `<i class="fa-solid fa-triangle-exclamation text-rose-500 text-xl"></i> ${classVal === 'ALL' ? 'Top 10 Học Sinh Cần Chú Ý (Kỷ Luật)' : `Học Sinh Cần Chú Ý - ${className}`}`;
+    disciplineTitle.innerHTML = `<i class="fa-solid fa-triangle-exclamation text-rose-500 text-xl"></i> ${classVal === 'ALL' ? 'Học Sinh Cần Chú Ý' : `Học Sinh Cần Chú Ý - ${className}`}`;
   }
 
-  // Get distinct scores ascending to handle ties correctly
-  const distinctScoresAsc = [...new Set(filtered.map(s => s.final_score))].sort((a, b) => a - b);
-  let cutoffScoreAsc = 999;
-  if (distinctScoresAsc.length > 0) {
-    if (distinctScoresAsc.length <= limit) {
-      cutoffScoreAsc = distinctScoresAsc[distinctScoresAsc.length - 1];
-    } else {
-      cutoffScoreAsc = distinctScoresAsc[limit - 1];
-    }
-  }
+  // Filter students under 7.0 and sort ascending
+  const disciplineRoll = filtered.filter(s => (s.final_score || 0) < 7.0).sort((a, b) => (a.final_score || 0) - (b.final_score || 0));
 
-  const disciplineRoll = filtered.filter(s => s.final_score <= cutoffScoreAsc).sort((a, b) => a.final_score - b.final_score);
+  if (disciplineRoll.length === 0) {
+    disciplineContainer.innerHTML = `<div class="p-6 text-center text-slate-400">Không có học sinh nào cần chú ý.</div>`;
+  } else {
+    disciplineRoll.forEach((s, idx) => {
+      const isUrgent = (s.final_score || 0) < 6.0;
+      const warnStatus = isUrgent ? "CẦN CÔ GIÁO HỖ TRỢ!" : "CẦN CỐ GẮNG THÊM";
+      
+      const warningIcon = isUrgent 
+        ? `<span class="w-7 h-7 rounded-full bg-rose-600 text-white flex items-center justify-center font-bold text-xs shadow-lg shadow-rose-500/40">⚠️</span>`
+        : `<span class="w-7 h-7 rounded-full bg-amber-500 text-white flex items-center justify-center font-bold text-xs shadow-lg shadow-amber-500/40">✏️</span>`;
 
-  disciplineRoll.forEach((s, idx) => {
-    let warningIcon = `<span class="w-7 h-7 rounded-full bg-rose-950 text-rose-400 flex items-center justify-center font-bold text-xs border border-rose-500/20">${idx + 1}</span>`;
-    if (idx === 0) warningIcon = `<span class="w-7 h-7 rounded-full bg-rose-600 text-white flex items-center justify-center font-bold text-xs shadow-lg shadow-rose-500/40">⚠️</span>`;
+      const hoverBorderClass = isUrgent ? "hover:border-rose-500/30" : "hover:border-amber-500/30";
+      const badgeColorClass = isUrgent ? "text-rose-500" : "text-amber-500";
+      const scoreColorClass = isUrgent ? "text-rose-400" : "text-amber-400";
 
-    let warnStatus = "Nhắc nhở thi đua";
-    if ((s.final_score || 0) < 5.0) warnStatus = "Cảnh báo học lực Yếu!";
-    else if ((s.final_score || 0) < 6.5) warnStatus = "Cần cố gắng học tập!";
-
-    const div = document.createElement('div');
-    div.className = "flex items-center justify-between p-3 rounded-xl bg-slate-900/60 border border-white/5 hover:border-rose-500/30 transition cursor-pointer";
-    div.onclick = () => openStudentModal(s.id);
-    div.innerHTML = `
-      <div class="flex items-center gap-3">
-        ${warningIcon}
-        <div>
-          <h4 class="font-bold text-white text-sm">${s.full_name}</h4>
-          <p class="text-xs text-slate-400">${s.class_name || 'Lớp'} - ${s.group_name} • KTTX: ${(s.avg_kttx || 0).toFixed(1)} • Cộng/Trừ: ${s.total_bonus_penalty >= 0 ? '+' : ''}${(s.total_bonus_penalty || 0).toFixed(1)}</p>
+      const div = document.createElement('div');
+      div.className = `flex items-center justify-between p-3 rounded-xl bg-slate-900/60 border border-white/5 ${hoverBorderClass} transition cursor-pointer`;
+      div.onclick = () => openStudentModal(s.id);
+      div.innerHTML = `
+        <div class="flex items-center gap-3">
+          ${warningIcon}
+          <div>
+            <h4 class="font-bold text-white text-sm">${s.full_name}</h4>
+            <p class="text-xs text-slate-400">${s.class_name || 'Lớp'} - ${s.group_name} • KTTX: ${(s.avg_kttx || 0).toFixed(1)} • Cộng/Trừ: ${s.total_bonus_penalty >= 0 ? '+' : ''}${(s.total_bonus_penalty || 0).toFixed(1)}</p>
+          </div>
         </div>
-      </div>
-      <div class="text-right">
-        <span class="text-lg font-extrabold text-rose-400">${(s.final_score || 0).toFixed(1)}</span>
-        <span class="block text-[10px] text-rose-500 uppercase font-semibold">${warnStatus}</span>
-      </div>
-    `;
-    disciplineContainer.appendChild(div);
-  });
+        <div class="text-right">
+          <span class="text-lg font-extrabold ${scoreColorClass}">${(s.final_score || 0).toFixed(1)}</span>
+          <span class="block text-[10px] ${badgeColorClass} uppercase font-bold">${warnStatus}</span>
+        </div>
+      `;
+      disciplineContainer.appendChild(div);
+    });
+  }
 }
 
 // Render Chart.js
