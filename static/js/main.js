@@ -1,5 +1,5 @@
 // Global App State
-let currentRole = 'TEACHER'; // TEACHER, LEADER_1..4, STUDENT
+let currentRole = null; // TEACHER, LEADER_1..4, STUDENT
 let currentGroupId = 1;
 let studentsData = [];
 let groupsData = [];
@@ -98,6 +98,15 @@ async function requestApi(url, options = {}) {
 // Load All Data from Flask Backend API
 async function loadInitialData() {
   try {
+    const savedRole = sessionStorage.getItem('currentRole');
+    if (savedRole) {
+      currentRole = savedRole;
+      const savedGroupId = sessionStorage.getItem('currentGroupId');
+      if (savedGroupId) currentGroupId = parseInt(savedGroupId);
+    } else {
+      currentRole = null;
+    }
+
     syncPeriodSelects();
     await Promise.all([
       fetchOverview(),
@@ -114,6 +123,10 @@ async function loadInitialData() {
     await populateReportCardClasses();
     populateLoginDropdown();
     updateRoleUI();
+
+    if (currentRole === null) {
+      openLoginModal();
+    }
   } catch (err) {
     console.error("Error loading data from server:", err);
     showToast(`Không thể kết nối Backend Server: ${err.message}`, "error");
@@ -222,18 +235,20 @@ async function fetchSystemMetrics() {
 // --- ROLE SWITCHING LOGIC ---
 async function switchRole(role) {
   currentRole = role;
-  if (role.startsWith('LEADER_')) {
+  if (role && role.startsWith('LEADER_')) {
     const gId = parseInt(role.replace('LEADER_', ''));
     currentGroupId = gId;
   }
   await updateRoleUI();
   
-  let roleDisplayName = role;
-  if (role.startsWith('LEADER_')) {
-    const matchedGroup = groupsData.find(g => g.id === currentGroupId);
-    roleDisplayName = matchedGroup ? `Nhóm Trưởng - ${matchedGroup.name} (${matchedGroup.class_name})` : role;
+  if (role) {
+    let roleDisplayName = role;
+    if (role.startsWith('LEADER_')) {
+      const matchedGroup = groupsData.find(g => g.id === currentGroupId);
+      roleDisplayName = matchedGroup ? `Nhóm Trưởng - ${matchedGroup.name} (${matchedGroup.class_name})` : role;
+    }
+    showToast(`Đã chuyển sang vai trò: ${role === 'TEACHER' ? 'Giáo viên KHTN' : roleDisplayName}`, 'info');
   }
-  showToast(`Đã chuyển sang vai trò: ${role === 'TEACHER' ? 'Giáo viên KHTN' : roleDisplayName}`, 'info');
 }
 
 async function updateRoleUI() {
@@ -247,29 +262,68 @@ async function updateRoleUI() {
   // Re-populate class/group dropdown options with role-based restrictions
   await populateDeclarationClasses();
 
+  // Login / Logout buttons toggling
+  const btnLogin = document.getElementById('btn-login-trigger');
+  const btnLogout = document.getElementById('btn-logout-trigger');
+  if (currentRole === null) {
+    if (btnLogin) btnLogin.style.display = 'inline-flex';
+    if (btnLogout) btnLogout.style.display = 'none';
+  } else {
+    if (btnLogin) btnLogin.style.display = 'none';
+    if (btnLogout) btnLogout.style.display = 'inline-flex';
+  }
+
+  // Role select visibility and state
+  const roleSelect = document.getElementById('role-select');
+  const roleSelectLabel = document.getElementById('role-select-label');
+  if (currentRole === null) {
+    if (roleSelect) roleSelect.style.display = 'none';
+    if (roleSelectLabel) roleSelectLabel.style.display = 'none';
+  } else {
+    if (roleSelect) {
+      roleSelect.style.display = 'inline-block';
+      roleSelect.disabled = true;
+      roleSelect.value = currentRole;
+    }
+    if (roleSelectLabel) roleSelectLabel.style.display = 'inline-block';
+  }
+
+  // Navigation tab bar and sections visibility
+  const nav = document.querySelector('nav');
+  const allTabs = document.querySelectorAll('.tab-content');
+  if (currentRole === null) {
+    if (nav) nav.style.display = 'none';
+    allTabs.forEach(tab => tab.classList.add('hidden'));
+  } else {
+    if (nav) nav.style.display = 'flex';
+    const activeTab = document.querySelector('.nav-tab.active');
+    const activeTabId = activeTab ? activeTab.getAttribute('onclick').match(/'([^']+)'/)[1] : 'tab-overview';
+    showTab(activeTabId);
+  }
+
   // Hide recalculate, import excel, add student, save scores, pending approval container for non-teachers
   const isTeacher = (currentRole === 'TEACHER');
   
   const btnRecalc = document.getElementById('btn-recalculate-all');
-  if (btnRecalc) btnRecalc.style.display = isTeacher ? 'inline-flex' : 'none';
+  if (btnRecalc) btnRecalc.style.display = (currentRole !== null && isTeacher) ? 'inline-flex' : 'none';
   
   const classAdminActions = document.getElementById('classes-admin-actions');
-  if (classAdminActions) classAdminActions.style.display = isTeacher ? 'flex' : 'none';
+  if (classAdminActions) classAdminActions.style.display = (currentRole !== null && isTeacher) ? 'flex' : 'none';
   
   const btnSaveScores = document.getElementById('btn-save-scores');
-  if (btnSaveScores) btnSaveScores.style.display = isTeacher ? 'inline-flex' : 'none';
+  if (btnSaveScores) btnSaveScores.style.display = (currentRole !== null && isTeacher) ? 'inline-flex' : 'none';
 
   const btnImportScores = document.getElementById('btn-import-scores');
-  if (btnImportScores) btnImportScores.style.display = isTeacher ? 'inline-flex' : 'none';
+  if (btnImportScores) btnImportScores.style.display = (currentRole !== null && isTeacher) ? 'inline-flex' : 'none';
 
   const btnEditComment = document.getElementById('btn-edit-rc-comment');
-  if (btnEditComment) btnEditComment.style.display = isTeacher ? 'inline-flex' : 'none';
+  if (btnEditComment) btnEditComment.style.display = (currentRole !== null && isTeacher) ? 'inline-flex' : 'none';
 
   const btnEditBadge = document.getElementById('btn-edit-rc-badge');
-  if (btnEditBadge) btnEditBadge.style.display = isTeacher ? 'inline-flex' : 'none';
+  if (btnEditBadge) btnEditBadge.style.display = (currentRole !== null && isTeacher) ? 'inline-flex' : 'none';
   
   const pendingContainer = document.getElementById('teacher-pending-container');
-  if (pendingContainer) pendingContainer.style.display = isTeacher ? 'block' : 'none';
+  if (pendingContainer) pendingContainer.style.display = (currentRole !== null && isTeacher) ? 'block' : 'none';
 
   // Navigation tab visibility: student cannot access Leader declaration
   const btnTabLeader = document.getElementById('btn-tab-leader');
@@ -277,17 +331,19 @@ async function updateRoleUI() {
     btnTabLeader.style.display = (currentRole === 'STUDENT') ? 'none' : 'inline-block';
   }
 
-  if (currentRole.startsWith('LEADER_')) {
-    const matchedGroup = groupsData.find(g => g.id === currentGroupId);
-    if (leaderLabel && matchedGroup) {
-      leaderLabel.innerText = `Đang làm việc: ${matchedGroup.name} (${matchedGroup.class_name})`;
-    } else if (leaderLabel) {
-      leaderLabel.innerText = `Đang làm việc: Nhóm ID ${currentGroupId}`;
+  if (currentRole !== null) {
+    if (currentRole.startsWith('LEADER_')) {
+      const matchedGroup = groupsData.find(g => g.id === currentGroupId);
+      if (leaderLabel && matchedGroup) {
+        leaderLabel.innerText = `Đang làm việc: ${matchedGroup.name} (${matchedGroup.class_name})`;
+      } else if (leaderLabel) {
+        leaderLabel.innerText = `Đang làm việc: Nhóm ID ${currentGroupId}`;
+      }
+      fetchGroupLogs(currentGroupId);
+    } else {
+      if (leaderLabel) leaderLabel.innerText = `Chế độ: ${currentRole}`;
+      fetchGroupLogs(currentGroupId);
     }
-    fetchGroupLogs(currentGroupId);
-  } else {
-    if (leaderLabel) leaderLabel.innerText = `Chế độ: ${currentRole}`;
-    fetchGroupLogs(currentGroupId);
   }
 
   // Rerender tables to reflect disabled inputs or hidden edit/delete buttons
@@ -757,6 +813,11 @@ function renderCharts(rankDist) {
 
 // Navigation Tab Switcher
 function showTab(tabId) {
+  if (currentRole === null) {
+    document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+    document.querySelectorAll('.nav-tab').forEach(el => el.classList.remove('active'));
+    return;
+  }
   document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
   document.querySelectorAll('.nav-tab').forEach(el => el.classList.remove('active'));
 
@@ -853,9 +914,20 @@ function renderClassesTable(list = null) {
 function openLoginModal() {
   const modal = document.getElementById('modal-login');
   if (modal) modal.classList.remove('hidden');
+
+  const btnX = document.getElementById('btn-close-login-x');
+  const btnCancel = document.getElementById('btn-close-login-cancel');
+  if (currentRole === null) {
+    if (btnX) btnX.style.display = 'none';
+    if (btnCancel) btnCancel.style.display = 'none';
+  } else {
+    if (btnX) btnX.style.display = 'block';
+    if (btnCancel) btnCancel.style.display = 'block';
+  }
 }
 
 function closeLoginModal() {
+  if (currentRole === null) return; // Prevent closing if not logged in
   const modal = document.getElementById('modal-login');
   if (modal) modal.classList.add('hidden');
 }
@@ -880,9 +952,24 @@ async function submitLogin(event) {
 
     if (data.success) {
       showToast(`✅ ${data.message} Chào mừng ${data.name}!`, "success");
+      // Save session
+      sessionStorage.setItem('currentRole', data.role);
+      sessionStorage.setItem('currentName', data.name);
+      if (data.group_id) {
+        sessionStorage.setItem('currentGroupId', data.group_id);
+      } else {
+        sessionStorage.removeItem('currentGroupId');
+      }
+
+      currentRole = data.role;
+      if (data.role.startsWith('LEADER_')) {
+        currentGroupId = data.group_id || 1;
+      }
+
       closeLoginModal();
-      document.getElementById('role-select').value = data.role;
-      switchRole(data.role);
+      const roleSelect = document.getElementById('role-select');
+      if (roleSelect) roleSelect.value = data.role;
+      await switchRole(data.role);
       showTab('tab-overview');
     } else {
       showToast(`❌ ${data.message || 'Đăng nhập không thành công!'}`, "error");
@@ -891,6 +978,17 @@ async function submitLogin(event) {
     console.error("Login fetch error:", err);
     showToast(`ĐĂNG NHẬP THẤT BẠI: ${err.message}`, "error");
   }
+}
+
+function logout() {
+  sessionStorage.removeItem('currentRole');
+  sessionStorage.removeItem('currentName');
+  sessionStorage.removeItem('currentGroupId');
+  currentRole = null;
+  currentGroupId = 1;
+  updateRoleUI();
+  openLoginModal();
+  showToast("🔒 Đã đăng xuất khỏi hệ thống thành công!", "info");
 }
 
 function testLoginFail() {
@@ -1348,7 +1446,7 @@ function populateRoleSelect() {
   roleSelect.appendChild(optStudent);
   
   // Set value back, check if valid option first
-  if (prevVal.startsWith('LEADER_')) {
+  if (prevVal && prevVal.startsWith('LEADER_')) {
     const matched = groupsData.find(g => `LEADER_${g.id}` === prevVal || `LEADER_${g.group_number}` === prevVal);
     if (matched) {
       roleSelect.value = `LEADER_${matched.id}`;
@@ -1358,11 +1456,15 @@ function populateRoleSelect() {
       roleSelect.value = 'TEACHER';
       currentRole = 'TEACHER';
     }
-  } else if (Array.from(roleSelect.options).some(o => o.value === prevVal)) {
+  } else if (prevVal && Array.from(roleSelect.options).some(o => o.value === prevVal)) {
     roleSelect.value = prevVal;
   } else {
-    roleSelect.value = 'TEACHER';
-    currentRole = 'TEACHER';
+    if (currentRole === null) {
+      roleSelect.value = '';
+    } else {
+      roleSelect.value = 'TEACHER';
+      currentRole = 'TEACHER';
+    }
   }
 }
 
