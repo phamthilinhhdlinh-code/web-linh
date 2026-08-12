@@ -420,6 +420,13 @@ def init_db():
         );
         """)
 
+    # Create indexes for optimized lookup performance
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_students_group_id ON students(group_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_students_class_id ON students(class_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_regular_scores_student_type ON regular_scores(student_id, score_type_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_bonus_penalty_logs_student_status ON bonus_penalty_logs(student_id, status, week_number);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_groups_class_id ON groups(class_id);")
+
     conn.commit()
 
     # Check if seed data exists
