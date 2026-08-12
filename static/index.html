@@ -39,10 +39,13 @@
 
       <!-- Dynamic Role Switcher & Login Status -->
       <div class="flex items-center gap-2 flex-wrap bg-slate-900/80 p-2 rounded-xl border border-white/10 text-xs md:text-sm">
-        <button onclick="openLoginModal()" class="bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-white font-bold px-3 py-1.5 rounded-lg shadow transition flex items-center gap-1.5">
+        <button id="btn-login-trigger" onclick="openLoginModal()" class="bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-white font-bold px-3 py-1.5 rounded-lg shadow transition flex items-center gap-1.5">
           <i class="fa-solid fa-right-to-bracket"></i> Đăng Nhập
         </button>
-        <span class="text-slate-400 pl-1 font-medium"><i class="fa-solid fa-user-shield mr-1 text-cyan-400"></i> Vai trò:</span>
+        <button id="btn-logout-trigger" onclick="logout()" class="hidden bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-3 py-1.5 rounded-lg shadow transition flex items-center gap-1.5">
+          <i class="fa-solid fa-right-from-bracket"></i> Đăng Xuất
+        </button>
+        <span id="role-select-label" class="text-slate-400 pl-1 font-medium"><i class="fa-solid fa-user-shield mr-1 text-cyan-400"></i> Vai trò:</span>
         <select id="role-select" onchange="switchRole(this.value)" class="bg-indigo-950/80 text-cyan-300 font-semibold px-3 py-1.5 rounded-lg border border-indigo-500/40 outline-none cursor-pointer focus:ring-2 focus:ring-indigo-400">
           <option value="TEACHER">👩‍🏫 Quản Trị Viên (Cô Linh)</option>
           <option value="LEADER_1">🚩 Nhóm Trưởng - Nhóm 1</option>
@@ -1163,7 +1166,7 @@ CREATE TABLE final_grades (
             <p class="text-xs text-slate-400">Quản Lý Học Sinh Môn KHTN - Cô Linh</p>
           </div>
         </div>
-        <button onclick="closeLoginModal()" class="text-slate-400 hover:text-white text-xl p-1 transition">
+        <button id="btn-close-login-x" onclick="closeLoginModal()" class="text-slate-400 hover:text-white text-xl p-1 transition">
           <i class="fa-solid fa-xmark"></i>
         </button>
       </div>
@@ -1185,7 +1188,7 @@ CREATE TABLE final_grades (
         </div>
 
         <div class="flex justify-end gap-2 pt-2">
-          <button type="button" onclick="closeLoginModal()" class="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-2 rounded-xl font-medium transition">
+          <button id="btn-close-login-cancel" type="button" onclick="closeLoginModal()" class="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-2 rounded-xl font-medium transition">
             Hủy
           </button>
           <button type="submit" class="bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-white px-5 py-2 rounded-xl font-semibold shadow-lg shadow-amber-500/25 transition">
