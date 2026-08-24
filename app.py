@@ -30,6 +30,14 @@ class PostgresCursorProxy:
         self._cursor.execute(query, params)
         return self
 
+    def executemany(self, query, params_list):
+        if params_list is None:
+            params_list = []
+        # Convert ? placeholders to postgres %s placeholders
+        query = query.replace('?', '%s')
+        self._cursor.executemany(query, params_list)
+        return self
+
     def fetchone(self):
         return self._cursor.fetchone()
 
