@@ -602,24 +602,8 @@ def recalculate_all_final_grades(conn=None):
         close_at_end = True
 
     cursor = conn.cursor()
-    cursor.execute("SELECT id FROM students;")
-    students = cursor.fetchall()
-
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    # Define week ranges for each KTTX period:
-    # KTTX 1: Tuần 1 - 5
-    # KTTX 2: Tuần 6 - 9 (to cover Week 9 as well)
-    # KTTX 3: Tuần 10 - 12
-    # KTTX 4: Tuần 13 - 15
-    period_weeks = {
-        1: (1, 5),
-        2: (6, 9),
-        3: (10, 12),
-        4: (13, 15)
-    }
-
-    # Map period index (1, 2, 3, 4) to actual score_type_id from database
+    
+    # 1. Fetch score_types mapping
     cursor.execute("SELECT id, category FROM score_types;")
     st_rows = cursor.fetchall()
     st_map = {}
@@ -635,34 +619,64 @@ def recalculate_all_final_grades(conn=None):
                 except ValueError:
                     pass
 
-    for s in students:
-        s_id = s['id']
+    # 2. Fetch all student ids
+    cursor.execute("SELECT id FROM students;")
+    student_rows = cursor.fetchall()
+    student_ids = [db_row_value(r, 'id', 0) for r in student_rows]
+
+    # 3. Fetch all regular scores into memory dict
+    cursor.execute("SELECT student_id, score_type_id, score FROM regular_scores;")
+    scores_rows = cursor.fetchall()
+    scores_map = {}
+    for r in scores_rows:
+        s_id = db_row_value(r, 'student_id', 0)
+        st_id = db_row_value(r, 'score_type_id', 1)
+        score_val = db_row_value(r, 'score', 2) or 0.0
+        scores_map[(s_id, st_id)] = score_val
+
+    # 4. Fetch all approved bonus/penalty sums per period into memory dict
+    cursor.execute("""
+        SELECT student_id,
+               SUM(CASE WHEN week_number BETWEEN 1 AND 5 THEN points ELSE 0 END) as bp_1,
+               SUM(CASE WHEN week_number BETWEEN 6 AND 9 THEN points ELSE 0 END) as bp_2,
+               SUM(CASE WHEN week_number BETWEEN 10 AND 12 THEN points ELSE 0 END) as bp_3,
+               SUM(CASE WHEN week_number BETWEEN 13 AND 15 THEN points ELSE 0 END) as bp_4
+        FROM bonus_penalty_logs
+        WHERE status = 'APPROVED'
+        GROUP BY student_id;
+    """)
+    bp_rows = cursor.fetchall()
+    bp_map = {}
+    for r in bp_rows:
+        s_id = db_row_value(r, 'student_id', 0)
+        bp_map[s_id] = {
+            1: round(db_row_value(r, 'bp_1', 1) or 0.0, 2),
+            2: round(db_row_value(r, 'bp_2', 2) or 0.0, 2),
+            3: round(db_row_value(r, 'bp_3', 3) or 0.0, 2),
+            4: round(db_row_value(r, 'bp_4', 4) or 0.0, 2)
+        }
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # 5. Compute grades locally in memory
+    insert_payload = []
+    for s_id in student_ids:
+        student_bp = bp_map.get(s_id, {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0})
         
         for period in [1, 2, 3, 4]:
             if period not in st_map:
                 continue
-            score_type_id = st_map[period]
+            st_id = st_map[period]
 
-            # 1. Calc Avg KTTX
-            cursor.execute("SELECT score FROM regular_scores WHERE student_id = ? AND score_type_id = ? LIMIT 1;", (s_id, score_type_id))
-            row = cursor.fetchone()
-            avg_kttx = db_row_value(row, 'score', 0) if row else 0.0
+            avg_kttx = scores_map.get((s_id, st_id), 0.0)
             avg_kttx = round(avg_kttx, 2)
 
-            # 2. Calc Total Approved Bonus/Penalty Points in the week range for this period
-            w_start, w_end = period_weeks[period]
-            cursor.execute("""
-                SELECT SUM(points) AS sum_val FROM bonus_penalty_logs
-                WHERE student_id = ? AND status = 'APPROVED' AND week_number BETWEEN ? AND ?;
-            """, (s_id, w_start, w_end))
-            total_bp = db_row_value(cursor.fetchone(), 'sum_val', 0) or 0.0
-            total_bp = round(total_bp, 2)
+            total_bp = student_bp.get(period, 0.0)
 
-            # 3. Calculate Final Grade = min(10.0, max(0.0, avg_kttx + total_bp))
+            # Keep exactly the original score formula: Điểm Chốt = min(10.0, max(0.0, avg_kttx + total_bp))
             final_score = min(10.0, max(0.0, avg_kttx + total_bp))
             final_score = round(final_score, 2)
 
-            # Rank determination
             if final_score >= 9.0:
                 rank = "Xuất Sắc"
             elif final_score >= 8.0:
@@ -674,17 +688,20 @@ def recalculate_all_final_grades(conn=None):
             else:
                 rank = "Yếu"
 
-            # Update or Insert final_grades
-            cursor.execute("""
-                INSERT INTO final_grades (student_id, kttx_period, avg_kttx, total_bonus_penalty, final_score, academic_rank, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(student_id, kttx_period) DO UPDATE SET
-                    avg_kttx = excluded.avg_kttx,
-                    total_bonus_penalty = excluded.total_bonus_penalty,
-                    final_score = excluded.final_score,
-                    academic_rank = excluded.academic_rank,
-                    updated_at = excluded.updated_at;
-            """, (s_id, period, avg_kttx, total_bp, final_score, rank, now_str))
+            insert_payload.append((s_id, period, avg_kttx, total_bp, final_score, rank, now_str))
+
+    # 6. Execute batch insertion and conflict resolution
+    if insert_payload:
+        cursor.executemany("""
+            INSERT INTO final_grades (student_id, kttx_period, avg_kttx, total_bonus_penalty, final_score, academic_rank, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(student_id, kttx_period) DO UPDATE SET
+                avg_kttx = excluded.avg_kttx,
+                total_bonus_penalty = excluded.total_bonus_penalty,
+                final_score = excluded.final_score,
+                academic_rank = excluded.academic_rank,
+                updated_at = excluded.updated_at;
+        """, insert_payload)
 
     conn.commit()
     if close_at_end:
