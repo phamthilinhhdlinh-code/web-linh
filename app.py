@@ -168,6 +168,68 @@ def ensure_score_types(conn):
             cursor.execute(f"INSERT INTO score_types (name, category, weight) VALUES ({placeholder}, {placeholder}, {placeholder});", (name, cat, weight))
     conn.commit()
 
+def ensure_mandatory_classes(conn):
+    db_url = os.environ.get("DATABASE_URL")
+    placeholder = "%s" if db_url else "?"
+    cursor = conn.cursor()
+
+    target_classes = [
+        ("6/2", 6, "2025-2026"),
+        ("6/10", 6, "2025-2026"),
+        ("7/8", 7, "2025-2026"),
+        ("7/9", 7, "2025-2026"),
+        ("7/10", 7, "2025-2026")
+    ]
+
+    # 1. Ensure target classes exist and have 8 groups each
+    for name, grade_level, academic_year in target_classes:
+        cursor.execute(f"SELECT id FROM classes WHERE name = {placeholder} OR name = {placeholder};", (name, f"Lớp {name}"))
+        row = cursor.fetchone()
+        row_id = db_row_value(row, 'id', 0)
+        if row_id is None:
+            cursor.execute(f"INSERT INTO classes (name, grade_level, academic_year) VALUES ({placeholder}, {placeholder}, {placeholder});", (name, grade_level, academic_year))
+            cursor.execute(f"SELECT id FROM classes WHERE name = {placeholder};", (name,))
+            row_id = db_row_value(cursor.fetchone(), 'id', 0)
+            
+        if row_id:
+            cursor.execute(f"SELECT group_number FROM groups WHERE class_id = {placeholder};", (row_id,))
+            existing_groups = {db_row_value(r, 'group_number', 0) for r in cursor.fetchall()}
+            for g_num in range(1, 9):
+                if g_num not in existing_groups:
+                    cursor.execute(f"INSERT INTO groups (class_id, group_number, name) VALUES ({placeholder}, {placeholder}, {placeholder});", (row_id, g_num, f"Nhóm {g_num}"))
+
+    # 2. Migrate students from class "6A" / "Lớp 6A" to "6/2" before removing 6A
+    cursor.execute(f"SELECT id FROM classes WHERE name = {placeholder} OR name = {placeholder};", ("6/2", "Lớp 6/2"))
+    c_6_2_row = cursor.fetchone()
+    c_6_2_id = db_row_value(c_6_2_row, 'id', 0) if c_6_2_row else None
+
+    if c_6_2_id:
+        cursor.execute(f"SELECT id FROM classes WHERE name = {placeholder} OR name = {placeholder};", ("6A", "Lớp 6A"))
+        c_6a_rows = cursor.fetchall()
+        for r_6a in c_6a_rows:
+            c_6a_id = db_row_value(r_6a, 'id', 0)
+            if c_6a_id and c_6a_id != c_6_2_id:
+                cursor.execute(f"SELECT id, group_id FROM students WHERE class_id = {placeholder};", (c_6a_id,))
+                students_6a = cursor.fetchall()
+                for s in students_6a:
+                    s_id = db_row_value(s, 'id', 0)
+                    old_g_id = db_row_value(s, 'group_id', 1)
+                    g_num = 1
+                    if old_g_id:
+                        cursor.execute(f"SELECT group_number FROM groups WHERE id = {placeholder};", (old_g_id,))
+                        g_row = cursor.fetchone()
+                        if g_row:
+                            g_num = db_row_value(g_row, 'group_number', 0) or 1
+                    
+                    cursor.execute(f"SELECT id FROM groups WHERE class_id = {placeholder} AND group_number = {placeholder};", (c_6_2_id, g_num))
+                    new_g_row = cursor.fetchone()
+                    new_g_id = db_row_value(new_g_row, 'id', 0) if new_g_row else None
+                    cursor.execute(f"UPDATE students SET class_id = {placeholder}, group_id = {placeholder} WHERE id = {placeholder};", (c_6_2_id, new_g_id, s_id))
+
+                cursor.execute(f"DELETE FROM classes WHERE id = {placeholder};", (c_6a_id,))
+
+    conn.commit()
+
 def init_db():
     db_url = os.environ.get("DATABASE_URL")
     is_postgres = db_url is not None
@@ -445,6 +507,7 @@ def init_db():
 
     # Ensure mandatory configurations exist under all circumstances
     ensure_score_types(conn)
+    ensure_mandatory_classes(conn)
 
     conn.close()
 
@@ -886,6 +949,19 @@ def get_classes():
     cursor.execute("SELECT * FROM classes;")
     classes = [dict(row) for row in cursor.fetchall()]
     conn.close()
+
+    import re
+    def class_sort_key(c):
+        grade = c.get('grade_level', 0) or 0
+        name = c.get('name', '') or ''
+        match = re.search(r'(\d+)\s*[/_-]?\s*(\d+)?', name)
+        if match:
+            part1 = int(match.group(1)) if match.group(1) else 0
+            part2 = int(match.group(2)) if match.group(2) else 0
+            return (grade, part1, part2, name)
+        return (grade, 999, 999, name)
+
+    classes.sort(key=class_sort_key)
     return jsonify(classes)
 
 @app.route('/api/groups', methods=['GET'])
