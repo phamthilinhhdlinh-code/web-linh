@@ -999,7 +999,7 @@ def get_students():
         query += " WHERE s.group_id = ?"
         params.append(group_id)
 
-    query += " ORDER BY s.group_id ASC, s.is_group_leader DESC, CAST(s.student_code AS INTEGER) ASC;"
+    query += " ORDER BY CAST(s.student_code AS INTEGER) ASC;"
 
     cursor.execute(query, params)
     students = [dict(row) for row in cursor.fetchall()]
