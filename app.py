@@ -1414,7 +1414,8 @@ def add_student():
                 INSERT INTO students (student_code, full_name, class_id, group_id, is_group_leader, avatar_gender)
                 VALUES (%s, %s, %s, %s, %s, %s) RETURNING id;
             """, (student_code, full_name, class_id, group_id, is_leader, gender))
-            student_id = cursor.fetchone()[0]
+            new_row = cursor.fetchone()
+            student_id = db_row_value(new_row, 'id', 0)
         else:
             cursor.execute("""
                 INSERT INTO students (student_code, full_name, class_id, group_id, is_group_leader, avatar_gender)
