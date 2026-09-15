@@ -1389,9 +1389,14 @@ def add_student():
     cursor = conn.cursor()
     is_postgres = 'psycopg' in str(type(conn)).lower() or 'postgres' in str(type(conn)).lower()
 
+    # Get class_id
+    cursor.execute("SELECT class_id FROM groups WHERE id = ?;" if not is_postgres else "SELECT class_id FROM groups WHERE id = %s;", (group_id,))
+    grow = cursor.fetchone()
+    class_id = db_row_value(grow, 'class_id', 0) if grow else 1
+
     if not student_code:
-        # Generate sequentially
-        cursor.execute("SELECT student_code FROM students;")
+        # Generate sequentially per class
+        cursor.execute("SELECT student_code FROM students WHERE class_id = ?;" if not is_postgres else "SELECT student_code FROM students WHERE class_id = %s;", (class_id,))
         existing_codes = []
         for r in cursor.fetchall():
             val = db_row_value(r, 'student_code', 0)
@@ -1402,11 +1407,6 @@ def add_student():
                     pass
         max_code = max(existing_codes) if existing_codes else 0
         student_code = str(max_code + 1)
-
-    # Get class_id
-    cursor.execute("SELECT class_id FROM groups WHERE id = ?;" if not is_postgres else "SELECT class_id FROM groups WHERE id = %s;", (group_id,))
-    grow = cursor.fetchone()
-    class_id = db_row_value(grow, 'class_id', 0) if grow else 1
 
     try:
         if is_postgres:
@@ -1462,23 +1462,11 @@ def bulk_import_students():
         conn = get_db()
         cursor = conn.cursor()
 
-        # Find current max student_code as integer
-        cursor.execute("SELECT student_code FROM students;")
-        existing_codes = []
-        for r in cursor.fetchall():
-            val = db_row_value(r, 'student_code', 0)
-            if val is not None:
-                try:
-                    existing_codes.append(int(val))
-                except Exception:
-                    pass
-        max_code = max(existing_codes) if existing_codes else 0
+        class_max_codes = {}
 
         for idx, item in enumerate(data):
             row_num = idx + 2
             full_name = item.get('full_name', '').strip()
-            # Always generate student_code sequentially based on the order of rows
-            student_code = str(max_code + idx + 1)
             class_name = item.get('class_name', '').strip()
             group_name = item.get('group_name', '').strip()
             
@@ -1507,6 +1495,21 @@ def bulk_import_students():
             else:
                 cursor.execute("INSERT INTO classes (name, grade_level, academic_year) VALUES (?, 8, '2025-2026');", (class_name,))
                 class_id = cursor.lastrowid
+
+            if class_id not in class_max_codes:
+                cursor.execute("SELECT student_code FROM students WHERE class_id = ?;", (class_id,))
+                c_codes = []
+                for r in cursor.fetchall():
+                    val = db_row_value(r, 'student_code', 0)
+                    if val is not None:
+                        try:
+                            c_codes.append(int(val))
+                        except Exception:
+                            pass
+                class_max_codes[class_id] = max(c_codes) if c_codes else 0
+
+            class_max_codes[class_id] += 1
+            student_code = str(class_max_codes[class_id])
 
             if not group_name:
                 errors.append(f"Dòng {row_num}: Nhóm không được để trống.")
