@@ -1402,23 +1402,64 @@ async function confirmDeleteStudent(studentId, studentName) {
 // --- EXPORT SUMMARY DATA ---
 async function exportDataSummary() {
   try {
+    if (typeof XLSX === 'undefined') {
+      showToast("Thư viện xuất Excel chưa sẵn sàng. Vui lòng thử lại sau vài giây!", "error");
+      return;
+    }
+
     const scoreClassSelect = document.getElementById('score-class-select');
     const classId = scoreClassSelect ? scoreClassSelect.value : 'ALL';
     
     const url = `/api/export/summary?class_id=${classId}&period=${selectedKttxPeriod}`;
-    const data = await requestApi(url);
+    const res = await requestApi(url);
+    const exportDate = res.export_date || new Date().toISOString().split('T')[0];
+    const rowsData = res.data || [];
 
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(data, null, 2));
-    const downloadAnchor = document.createElement('a');
-    downloadAnchor.setAttribute("href", dataStr);
-    downloadAnchor.setAttribute("download", `BaoCao_KHTN_Lop_${classId}_${data.export_date}.json`);
-    document.body.appendChild(downloadAnchor);
-    downloadAnchor.click();
-    downloadAnchor.remove();
+    if (!rowsData.length) {
+      showToast("Không có dữ liệu học sinh để xuất báo cáo!", "warning");
+      return;
+    }
 
-    showToast("Đã tải xuống file báo cáo tổng hợp KHTN!", "success");
+    // Format data for Excel worksheet with Vietnamese headers
+    const excelRows = rowsData.map((item, idx) => ({
+      "STT": idx + 1,
+      "Mã HS": item.student_code || (idx + 1),
+      "Họ Và Tên": item.full_name || "",
+      "Lớp": item.class_name || "",
+      "Nhóm KHTN": item.group_name || "",
+      "Điểm KTTX": item.avg_kttx != null ? Number(item.avg_kttx) : "",
+      "Điểm Cộng/Trừ Thi Đua": item.total_bonus_penalty != null ? Number(item.total_bonus_penalty) : 0,
+      "Điểm Chốt KHTN": item.final_score != null ? Number(item.final_score) : "",
+      "Xếp Loại Học Lực": item.academic_rank || ""
+    }));
+
+    // Generate SheetJS worksheet
+    const worksheet = XLSX.utils.json_to_sheet(excelRows);
+
+    // Set column widths for clean printing
+    worksheet['!cols'] = [
+      { wch: 6 },   // STT
+      { wch: 10 },  // Mã HS
+      { wch: 25 },  // Họ Và Tên
+      { wch: 10 },  // Lớp
+      { wch: 14 },  // Nhóm KHTN
+      { wch: 12 },  // Điểm KTTX
+      { wch: 22 },  // Điểm Cộng/Trừ Thi Đua
+      { wch: 16 },  // Điểm Chốt KHTN
+      { wch: 18 }   // Xếp Loại Học Lực
+    ];
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "BaoCao_KHTN");
+
+    // Save as .xlsx file
+    const filename = `BaoCao_KHTN_Lop_${classId}_Dot${selectedKttxPeriod}_${exportDate}.xlsx`;
+    XLSX.writeFile(workbook, filename);
+
+    showToast("Đã xuất file báo cáo tổng hợp Excel (.xlsx) thành công!", "success");
   } catch (err) {
     console.error("Export error:", err);
+    showToast("Có lỗi xảy ra khi xuất báo cáo Excel!", "error");
   }
 }
 
