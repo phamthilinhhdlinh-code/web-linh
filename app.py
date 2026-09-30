@@ -125,7 +125,7 @@ def get_db():
             db_error_trace = f"Resolution error: {str(e)}\n{traceback.format_exc()}"
 
         try:
-            conn = psycopg.connect(resolved_url, sslmode='require', row_factory=dict_row)
+            conn = psycopg.connect(resolved_url, sslmode='require', row_factory=dict_row, prepare_threshold=None)
             return PostgresConnectionProxy(conn)
         except Exception as e:
             import traceback
