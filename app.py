@@ -1766,7 +1766,7 @@ def export_summary():
         query += " WHERE s.class_id = ?"
         params.append(class_id)
         
-    query += " ORDER BY c.name, g.group_number, CAST(s.student_code AS INTEGER);"
+    query += " ORDER BY CAST(s.student_code AS INTEGER) ASC;"
 
     cursor.execute(query, params)
     rows = [dict(r) for r in cursor.fetchall()]
