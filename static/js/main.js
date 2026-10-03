@@ -1420,6 +1420,13 @@ async function exportDataSummary() {
       return;
     }
 
+    // Sort rowsData by student_code numerically ascending
+    rowsData.sort((a, b) => {
+      const codeA = parseInt(a.student_code || 0, 10);
+      const codeB = parseInt(b.student_code || 0, 10);
+      return codeA - codeB;
+    });
+
     // Format data for Excel worksheet with Vietnamese headers
     const excelRows = rowsData.map((item, idx) => ({
       "STT": idx + 1,
